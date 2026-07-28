@@ -93,6 +93,16 @@ import 'retail_intelligence_page.dart';
 import 'whatsapp_order_page.dart';
 import 'sync_service.dart';
 import 'background_sync_worker.dart';
+import 'automatic_backup_service.dart';
+import 'enhanced_sync_queue.dart';
+import 'crash_recovery_service.dart';
+import 'data_integrity_service.dart';
+import 'manual_backup_service.dart';
+import 'data_corruption_service.dart';
+import 'audit_logging_service.dart';
+import 'device_capability_service.dart';
+import 'performance_monitor_service.dart';
+import 'adaptive_service_manager.dart';
 import 'day_closing_page.dart';
 import 'analytics_dashboard.dart';
 import 'gst_compliance.dart';
@@ -372,6 +382,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    
+    // 🔍 Initialize adaptive service manager (replaces individual service initialization)
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await AdaptiveServiceManager.instance.initialize();
+        if (kDebugMode) debugPrint('🚀 Adaptive service manager initialized');
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Adaptive service manager initialization failed: $e');
+      }
+    });
+    
     _loggedInFuture = _checkLogin();
     
     // Initialize WhatsApp Sharing Intent listener
@@ -410,21 +431,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       if (!mounted) return;
       globalNavigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (_) => false);
     });
-    
-    // 🔄 Start background sync worker for continuous data sync
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await BackgroundSyncWorker.instance.start();
-        if (kDebugMode) debugPrint('🚀 Background sync worker started');
-      } catch (e) {
-        if (kDebugMode) debugPrint('⚠️ Background sync worker start failed: $e');
-      }
-    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    
+    // Stop all services through adaptive manager
+    AdaptiveServiceManager.instance.stopAllServices();
+    
     super.dispose();
   }
 

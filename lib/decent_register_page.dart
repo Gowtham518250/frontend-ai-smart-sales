@@ -84,8 +84,8 @@ class _DecentRegisterPageState extends State<DecentRegisterPage>
     });
 
     try {
-      // This is the actual fix: call /auth/register, not /auth/login.
-      final response = await ApiClient.postForm('/auth/register', {
+      // This is the actual fix: call /auth/register with JSON data, not form data
+      final response = await ApiClient.postJson('/auth/register', {
         'username': username,
         'email': email,
         'password': password,
