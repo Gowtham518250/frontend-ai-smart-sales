@@ -86,61 +86,64 @@ class _ShopDetailsPageState extends State<ShopDetailsPage> {
     'Beverages',
     'Fresh Produce',
   ];
-  
-      _loadExistingData();
+
+  Uint8List? logoBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadExistingData();
+  }
+
   bool isLoading = false;
   String? successMessage;
   String? errorMessage;
-      // First try to get canonical profile via persistence service (local cache or backend)
-      try {
-        final profile = await ShopProfilePersistenceService.getProfile();
-        if (profile != null) {
-          // Ensure prefs are populated consistently
-          await ShopProfilePersistenceService.applyProfileToPrefs(profile);
-        }
-      } catch (e) {
-        if (kDebugMode) debugPrint('⚠️ Error loading profile via persistence service: $e');
+
+  Future<void> _loadExistingData() async {
+    try {
+      final profile = await ShopProfilePersistenceService.getProfile();
+      if (profile != null) {
+        await ShopProfilePersistenceService.applyProfileToPrefs(profile);
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Error loading profile via persistence service: $e');
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+
+    setState(() {
+      shopNameController.text = prefs.getString('shop_name') ?? '';
+      locationController.text = prefs.getString('location') ?? '';
+      selectedShopType = prefs.getString('shop_type');
+      contactPersonController.text = prefs.getString('contact_person') ?? '';
+      phoneController.text = prefs.getString('shop_phone') ?? '';
+      emailController.text = prefs.getString('shop_email') ?? '';
+      gstController.text = prefs.getString('gst_number') ?? '';
+
+      final categoriesStr = prefs.getString('shop_categories');
+      if (categoriesStr != null && categoriesStr.isNotEmpty) {
+        selectedCategories = categoriesStr.split(',');
       }
 
-      // Now populate controllers from SharedPreferences (backwards-compatible)
-      final prefs = await SharedPreferences.getInstance();
-      setState(() {
-        shopNameController.text = prefs.getString('shop_name') ?? '';
-        locationController.text = prefs.getString('location') ?? '';
-        selectedShopType = prefs.getString('shop_type');
-        contactPersonController.text = prefs.getString('contact_person') ?? '';
-        phoneController.text = prefs.getString('shop_phone') ?? '';
-        emailController.text = prefs.getString('shop_email') ?? '';
-        gstController.text = prefs.getString('gst_number') ?? '';
+      openingHourController.text = prefs.getString('opening_hour') ?? '09:00 AM';
+      closingHourController.text = prefs.getString('closing_hour') ?? '09:00 PM';
 
-        final categoriesStr = prefs.getString('shop_categories');
-        if (categoriesStr != null && categoriesStr.isNotEmpty) {
-          selectedCategories = categoriesStr.split(',');
-        }
-
-        openingHourController.text = prefs.getString('opening_hour') ?? '09:00 AM';
-        closingHourController.text = prefs.getString('closing_hour') ?? '09:00 PM';
-
-        final logoBase64 = prefs.getString('logo_base64');
-        if (logoBase64 != null && logoBase64.isNotEmpty) {
-          try {
-            logoBytes = base64Decode(logoBase64);
-          } catch (e) {
-            if (kDebugMode) debugPrint('Error decoding logo: $e');
-          }
-        }
-      });
-
-      // Kick off background refresh from backend via persistence service
-      try {
-        await ShopProfilePersistenceService.fetchProfileFromBackend();
-      } catch (_) {}
+      final logoBase64 = prefs.getString('logo_base64');
+      if (logoBase64 != null && logoBase64.isNotEmpty) {
+        try {
           logoBytes = base64Decode(logoBase64);
         } catch (e) {
           if (kDebugMode) debugPrint('Error decoding logo: $e');
         }
       }
     });
+
+    try {
+      await ShopProfilePersistenceService.fetchProfileFromBackend();
+    } catch (_) {
+      // Ignore backend refresh failures.
+    }
   }
 
   Future<void> pickLogo() async {

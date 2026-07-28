@@ -140,6 +140,13 @@ class _RegisterPageState extends State<RegisterPage>
         if (kDebugMode) debugPrint('📝 Registration attempt ${_retryCount + 1}/$_maxRetries');
         
         // ✅ FIXED: Use correct field names (username, and include shop_name)
+        if (kDebugMode) debugPrint('📝 Calling /auth/register with: ${{
+          'username': nameController.text.trim(),
+          'shop_name': shopNameController.text.trim(),
+          'email': emailController.text.trim(),
+          'password': '***'
+        }}');
+        
         final response = await ApiClient.postJson('/auth/register', {
           'username': nameController.text.trim(),  // Backend expects 'username'
           'shop_name': shopNameController.text.trim(),
@@ -155,28 +162,9 @@ class _RegisterPageState extends State<RegisterPage>
         if (response.statusCode == 200 || response.statusCode == 201) {
           await _handleRegistrationSuccess(response);
           return; // Success - exit retry loop
-        } else if (response.statusCode == 400) {
-          // Client validation error - don't retry
-          await _handleRegistrationError(response);
-          return;
-        } else if (response.statusCode == 409) {
-          // Conflict - duplicate email or username
-          // This could be because the user actually exists, OR because a previous attempt
-          // succeeded in the background but timed out locally.
-          if (kDebugMode) debugPrint('⚠️ 409 Conflict. Attempting fallback login to check idempotency.');
-          try {
-            final loginResponse = await ApiClient.postJson('/auth/login', {
-              'email': emailController.text.trim(),
-              'password': passwordController.text.trim(),
-            });
-            if (loginResponse.statusCode == 200) {
-              if (kDebugMode) debugPrint('✅ Fallback login succeeded. Registration was actually successful.');
-              await _handleRegistrationSuccess(loginResponse);
-              return;
-            }
-          } catch (_) {}
-          
-          // If fallback login failed, show clear error message
+        } else if (response.statusCode == 400 || response.statusCode == 409) {
+          // Client validation error or conflict - don't retry.
+          // This should surface the backend message directly instead of falling back to login.
           await _handleRegistrationError(response);
           return;
         } else {
@@ -364,26 +352,27 @@ class _RegisterPageState extends State<RegisterPage>
 
   Future<void> _handleRegistrationError(http.Response response) async {
     try {
-      final data = json.decode(response.body);
-      final detail = (data['detail'] ?? 'Registration failed. Please try again.').toString();
-      
+      final body = response.body;
+      final decoded = json.decode(body);
+      final detail = (decoded is Map<String, dynamic>
+              ? (decoded['detail'] ?? decoded['message'] ?? 'Registration failed. Please try again.')
+              : body)
+          .toString();
+
       if (mounted) {
         setState(() {
           isLoading = false;
-          
-          // Show the EXACT backend error so user knows what to fix
-          if (detail.toLowerCase().contains('email already') ||
-              detail.toLowerCase().contains('email already has an account')) {
+
+          final lowerDetail = detail.toLowerCase();
+          if (lowerDetail.contains('email already') || lowerDetail.contains('already registered')) {
             errorMessage = '📧 This email is already registered.\n\n💡 Try logging in instead, or use a different email address.';
-          } else if (detail.toLowerCase().contains('username already') ||
-              detail.toLowerCase().contains('username already registered')) {
-            errorMessage = '👤 This shop name is already taken.\n\n💡 Please choose a different shop/owner name.';
-          } else if (detail.toLowerCase().contains('email is required')) {
+          } else if (lowerDetail.contains('username already') || lowerDetail.contains('shop name')) {
+            errorMessage = '👤 This owner/shop name is already taken.\n\n💡 Please choose a different name.';
+          } else if (lowerDetail.contains('email is required')) {
             errorMessage = '📧 Email address is required. Please enter your email.';
-          } else if (detail.toLowerCase().contains('password')) {
+          } else if (lowerDetail.contains('password')) {
             errorMessage = '🔒 Password issue: $detail';
           } else {
-            // Show the raw backend message — don\'t hide it
             errorMessage = detail;
           }
           successMessage = '';
