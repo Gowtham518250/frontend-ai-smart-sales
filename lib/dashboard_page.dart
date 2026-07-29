@@ -241,6 +241,7 @@ class _DashboardPageState extends State<DashboardPage>
   int _onlineTodayOrders = 0;
   double _onlineTodayRevenue = 0.0;
   int _onlinePaidCount = 0;
+  int _unsyncedBillsCount = 0; // Surfaced as a persistent dashboard warning, not just used for the health score
 
   void _addToActivityFeed(String activity) {
     setState(() {
@@ -264,6 +265,8 @@ class _DashboardPageState extends State<DashboardPage>
             action == 'update_invoice_paid' ||
             action == 'update_invoice_unpaid';
       }).length;
+
+      if (mounted) setState(() => _unsyncedBillsCount = unsyncedBills);
 
       final dayClosed = _shopClosed || _closedToday;
       final duesPending = _pendingInvoices.isNotEmpty;
@@ -563,7 +566,10 @@ class _DashboardPageState extends State<DashboardPage>
       }
 
       // Load workers JSON
-      final workersJson = prefs.getString('workers_json');
+      // FIX: written via ScopedSharedPreferences (line ~505 below), which
+      // stores under 'user_<id>_workers_json' — reading the raw key here
+      // was a self-inconsistent no-op.
+      final workersJson = await ScopedSharedPreferences.getString('workers_json');
       if (workersJson != null && mounted) {
         try {
           final parsed = json.decode(workersJson);
@@ -9608,82 +9614,43 @@ class _DashboardPageState extends State<DashboardPage>
     );
   }
 
-  void _showComingSoonOnlineStore(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+  Widget _buildUnsyncedSalesWarning() {
+    final count = _unsyncedBillsCount;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.35)),
       ),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFB300).withValues(alpha: 0.15),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.storefront_outlined,
-                semanticLabel: 'Storefront Outlined',
-                color: Color(0xFFFFB300),
-                size: 48,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Online Store Coming Soon!',
-              style: GoogleFonts.poppins(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'We are building a powerful online store feature so your customers can order directly from you. If you are interested in getting early access, please contact the owner.',
-              style: GoogleFonts.poppins(
-                fontSize: 14,
-                color: Colors.grey.shade600,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  launchUrl(
-                    Uri.parse(
-                      'whatsapp://send?phone=918125436350&text=Hi, I am interested in the Online Store early access for AI Shop Pro.',
-                    ),
-                  );
-                },
-                icon: const Icon(
-                  Icons.chat_outlined,
-                  semanticLabel: 'Chat Outlined',
-                  color: Colors.white,
-                ),
-                label: const Text('Contact via WhatsApp'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF25D366),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  textStyle: GoogleFonts.poppins(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.cloud_off_rounded, color: Color(0xFFEF4444), size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  count == 1
+                      ? '1 sale not backed up to the cloud yet'
+                      : '$count sales not backed up to the cloud yet',
+                  style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13.5,
+                    color: const Color(0xFFB91C1C),
                   ),
                 ),
-              ),
+                const SizedBox(height: 3),
+                Text(
+                  'Stay connected to the internet until these sync. Do NOT clear app data or uninstall until this warning disappears — that would permanently delete them.',
+                  style: GoogleFonts.poppins(fontSize: 11.5, color: const Color(0xFF7F1D1D)),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -12882,6 +12849,15 @@ class _DashboardPageState extends State<DashboardPage>
               // 0. GREETING HEADER
               _buildGreetingHeader(),
 
+              // 0.05 UNSYNCED SALES WARNING — the only real defense against
+              // OS-level "Clear app data" wiping local-only sales: make sure
+              // the shop owner can SEE there's something at risk before they
+              // ever go near phone settings, rather than finding out after.
+              if (_unsyncedBillsCount > 0) ...[
+                const SizedBox(height: 12),
+                _buildUnsyncedSalesWarning(),
+              ],
+
 
 
               // 0.07 FIRST-TIME WELCOME CARD (only once)
@@ -13086,8 +13062,7 @@ class _DashboardPageState extends State<DashboardPage>
         ),
       ), // closes AppBackground
     ), // closes ErrorBoundary
-  ), // closes Scaffold
-); // closes BackendLoadingOverlay
+  ); // closes Scaffold
 }
 
   void _showVoiceCustomizer(BuildContext context, StateSetter setDlgState) {

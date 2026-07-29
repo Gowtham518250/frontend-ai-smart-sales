@@ -85,13 +85,13 @@ class AuditLoggingService {
   
   /// Log a system event
   Future<void> logSystemEvent(String event, Map<String, dynamic> details) async {
-    final logEvent = AuditEvent(
+    final auditEvent = AuditEvent(
       type: AuditType.systemEvent,
       action: event,
       description: 'System event: $event',
       details: details,
     );
-    await logEvent(logEvent);
+    await logEvent(auditEvent);
   }
   
   /// Log an error
@@ -109,13 +109,13 @@ class AuditLoggingService {
   
   /// Log a security event
   Future<void> logSecurityEvent(String event, Map<String, dynamic> details) async {
-    final logEvent = AuditEvent(
+    final auditEvent = AuditEvent(
       type: AuditType.securityEvent,
       action: event,
       description: 'Security event: $event',
       details: details,
     );
-    await logEvent(logEvent);
+    await logEvent(auditEvent);
   }
   
   /// Get audit log

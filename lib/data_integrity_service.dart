@@ -373,8 +373,8 @@ class IntegrityReport {
     report.backendCheckFailed = json['backend_check_failed'] ?? false;
     report.checkSkipped = json['check_skipped'] ?? false;
     report.checkError = json['check_error'];
-    report.issues = List<String>.from(json['issues'] ?? []);
-    report.missingInBackend = List<String>.from(json['missing_in_backend'] ?? []);
+    report.issues.addAll(List<String>.from(json['issues'] ?? []));
+    report.missingInBackend.addAll(List<String>.from(json['missing_in_backend'] ?? []));
     return report;
   }
 }

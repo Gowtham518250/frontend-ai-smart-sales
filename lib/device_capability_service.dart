@@ -57,14 +57,15 @@ class DeviceCapabilityService {
       
       if (Platform.isAndroid) {
         final androidInfo = await deviceInfo.androidInfo;
-        capabilities.totalRAM = androidInfo.totalMemory / (1024 * 1024 * 1024); // Convert to GB
+        capabilities.totalRAM = await _getAndroidTotalRAM();
         capabilities.cpuCores = androidInfo.supportedAbis.length;
         capabilities.androidSdkVersion = androidInfo.version.sdkInt;
         capabilities.deviceModel = '${androidInfo.brand} ${androidInfo.model}';
       } else if (Platform.isIOS) {
         final iosInfo = await deviceInfo.iosInfo;
-        capabilities.totalRAM = _estimateIOSRAM(iosInfo.machine);
-        capabilities.cpuCores = _estimateIOSCores(iosInfo.machine);
+        final machine = iosInfo.utsname.machine;
+        capabilities.totalRAM = _estimateIOSRAM(machine);
+        capabilities.cpuCores = _estimateIOSCores(machine);
         capabilities.deviceModel = iosInfo.model;
       }
       
@@ -115,6 +116,30 @@ class DeviceCapabilityService {
     return PerformanceMode.balanced;
   }
   
+  /// Get total RAM on Android by reading /proc/meminfo
+  /// (device_info_plus does not expose total device memory directly)
+  Future<double> _getAndroidTotalRAM() async {
+    try {
+      final file = File('/proc/meminfo');
+      if (!await file.exists()) return 2.0; // Conservative default
+
+      final lines = await file.readAsLines();
+      for (final line in lines) {
+        if (line.startsWith('MemTotal:')) {
+          final match = RegExp(r'(\d+)').firstMatch(line);
+          if (match != null) {
+            final kb = int.parse(match.group(1)!);
+            return kb / (1024 * 1024); // Convert KB to GB
+          }
+        }
+      }
+      return 2.0; // Conservative default if MemTotal not found
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Error reading /proc/meminfo: $e');
+      return 2.0; // Conservative default
+    }
+  }
+
   /// Get available memory
   Future<double> _getAvailableMemory() async {
     try {

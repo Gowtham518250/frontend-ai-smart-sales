@@ -185,7 +185,21 @@ class UserDataClearService {
         }
       
       // Clear session keys
+      // FIX: 'user_id'/'userId' are in this list, and every LocalStorageService
+      // save function below (saveSales, saveLocalInvoices, etc.) is guarded by
+      // _hasValidUserId() — which reads exactly those two keys. Removing them
+      // first, then calling saveSales()/saveLocalInvoices()/etc. afterward,
+      // meant every "restore" call below silently no-op'd (logged a debug
+      // line and returned) instead of actually writing anything back. The
+      // Hive box itself is user-id-scoped so this often self-heals on a
+      // same-account relogin once initializeSession() sets user_id again —
+      // but any restore step whose data wasn't already durably on disk
+      // before this function ran had no working safety net. Preserving
+      // user_id/userId until after the restore closes that gap.
+      final preservedUserId = prefs.getInt('user_id');
+      final preservedUserIdAlt = prefs.getInt('userId');
       for (final key in userDataKeys) {
+        if (key == 'user_id' || key == 'userId') continue;
         if (prefs.containsKey(key)) {
           await prefs.remove(key);
           if (kDebugMode) debugPrint('  ✓ Cleared: $key');
@@ -210,6 +224,13 @@ class UserDataClearService {
         }
       }
       
+      // Now that sales/invoices/customers/products/inventory have been
+      // durably restored (using the preserved user_id), it's safe to clear
+      // user_id/userId as originally intended — the new session's
+      // initializeSession() call will set the real one right after this.
+      if (preservedUserId != null) await prefs.remove('user_id');
+      if (preservedUserIdAlt != null) await prefs.remove('userId');
+
       // Reset inventory management service
       InventoryManagementService.reset();
 

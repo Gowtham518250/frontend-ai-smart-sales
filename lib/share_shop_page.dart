@@ -22,7 +22,7 @@ class _ShareShopPageState extends State<ShareShopPage> {
   String _shopId = '1';
   String _shopName = 'My Shop';
   bool _isLoading = true;
-  String _shopUrl = 'https://retail-mind-web.onrender.com/shop/1'; // Fallback, will be updated in _loadShopData
+  String _shopUrl = 'https://retail-mind-vkbp.onrender.com/shop/1'; // Fallback, will be updated in _loadShopData
   bool _sharingQr = false;
 
   final GlobalKey _qrKey = GlobalKey();
@@ -45,7 +45,7 @@ class _ShareShopPageState extends State<ShareShopPage> {
         _shopId = shopId;
         _shopName = shopName;
         // Use the deployed web URL
-        _shopUrl = 'https://retail-mind-web.onrender.com/shop/$shopId';
+        _shopUrl = 'https://retail-mind-vkbp.onrender.com/shop/$shopId';
         _isLoading = false;
       });
     } catch (e) {

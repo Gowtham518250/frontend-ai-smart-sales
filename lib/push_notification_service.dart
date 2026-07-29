@@ -1,6 +1,7 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'api_client.dart'; // To get the auth token
@@ -11,7 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // If you're going to use other Firebase services in the background, such as Firestore,
   // make sure you call `Firebase.initializeApp()` before using other Firebase services.
-  print("Handling a background message: ${message.messageId}");
+  if (kDebugMode) print("Handling a background message: ${message.messageId}");
 }
 
 class PushNotificationService {
@@ -31,7 +32,7 @@ class PushNotificationService {
       sound: true,
     );
 
-    print('User granted permission: ${settings.authorizationStatus}');
+    if (kDebugMode) print('User granted permission: ${settings.authorizationStatus}');
 
     if (settings.authorizationStatus != AuthorizationStatus.authorized) {
       return;
@@ -56,18 +57,18 @@ class PushNotificationService {
     await _localNotificationsPlugin.initialize(
       initializationSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
-        print("Notification clicked! Payload: ${response.payload}");
+        if (kDebugMode) print("Notification clicked! Payload: ${response.payload}");
         // Here you could navigate to the orders page
       },
     );
 
     // 4. Listen for foreground messages
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      print('Got a message whilst in the foreground!');
-      print('Message data: ${message.data}');
+      if (kDebugMode) print('Got a message whilst in the foreground!');
+      if (kDebugMode) print('Message data: ${message.data}');
 
       if (message.notification != null) {
-        print('Message also contained a notification: ${message.notification}');
+        if (kDebugMode) print('Message also contained a notification: ${message.notification}');
         _showLocalNotification(message);
       }
     });
@@ -75,12 +76,12 @@ class PushNotificationService {
     // 5. Get and register FCM token
     try {
       String? token = await _firebaseMessaging.getToken();
-      print("FCM Device Token: $token");
+      if (kDebugMode) print("FCM Device Token: $token");
       if (token != null) {
         await registerTokenWithBackend(token);
       }
     } catch (e) {
-      print("Error getting FCM token: $e");
+      if (kDebugMode) print("Error getting FCM token: $e");
     }
 
     // 6. Listen for token refreshes
@@ -133,7 +134,7 @@ class PushNotificationService {
       final baseUrl = ApiClient.baseUrl;
 
       if (jwtToken == null) {
-        print("Cannot register FCM token: User not logged in yet");
+        if (kDebugMode) print("Cannot register FCM token: User not logged in yet");
         return;
       }
 
@@ -147,12 +148,12 @@ class PushNotificationService {
       );
 
       if (response.statusCode == 200) {
-        print("FCM token registered with backend successfully");
+        if (kDebugMode) print("FCM token registered with backend successfully");
       } else {
-        print("Failed to register FCM token. Status: ${response.statusCode}, Body: ${response.body}");
+        if (kDebugMode) print("Failed to register FCM token. Status: ${response.statusCode}, Body: ${response.body}");
       }
     } catch (e) {
-      print("Error sending FCM token to backend: $e");
+      if (kDebugMode) print("Error sending FCM token to backend: $e");
     }
   }
 }

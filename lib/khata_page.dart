@@ -310,12 +310,18 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
     if (kDebugMode) debugPrint('📦 Loading ${unified.length} customers from local storage');
 
     for (var c in unified) {
-      double bal = (c['balance'] as num?)?.toDouble() ?? 0.0;
+      // FIX: loadUnifiedCustomersLedger() returns 'unified_balance' and
+      // 'history', not 'balance' and 'invoices'. Reading the wrong keys
+      // meant `bal` was always 0.0 here, so this tab silently showed zero
+      // pending customers even when real outstanding balances existed
+      // locally — every time the backend call above failed or was slow
+      // (exactly the offline-first case), this was the only data source.
+      double bal = (c['unified_balance'] as num?)?.toDouble() ?? 0.0;
       if (bal > 0.01) {
         _totalOutstanding += bal;
         _pendingCount++;
         _customers.add({
-          'customer_id': c['customer_id'],
+          'customer_id': c['phone'],
           'customer_name': c['name'] ?? 'Customer',
           'customer_phone': c['phone'] ?? '',
           'total_balance': bal,
@@ -323,7 +329,7 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
           'is_overdue': false,
           'days_overdue': 0,
           'earliest_due_date': c['due_date'],
-          'invoices': c['invoices'] ?? []
+          'invoices': c['history'] ?? []
         });
       }
     }

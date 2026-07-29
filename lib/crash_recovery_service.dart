@@ -353,11 +353,11 @@ class CrashRecoveryService {
   Future<void> _fixDuplicateProducts() async {
     try {
       final products = await LocalStorageService.loadBackendProducts();
-      final uniqueProducts = <String, dynamic>{};
+      final uniqueProducts = <String, Map<String, dynamic>>{};
       
       for (final product in products) {
         final productId = product['id'].toString();
-        uniqueProducts[productId] = product;
+        uniqueProducts[productId] = product as Map<String, dynamic>;
       }
       
       if (uniqueProducts.length < products.length) {

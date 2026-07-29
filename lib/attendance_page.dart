@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'scoped_shared_preferences.dart';
 import 'package:intl/intl.dart';
 import 'api_client.dart';
 import 'app_localizations.dart';
@@ -84,8 +85,12 @@ class _AttendancePageState extends State<AttendancePage>
   Future<void> _loadStaff() async {
     // Load staff from local storage first (immediate response)
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final workersJson = prefs.getString('workers_json');
+      // FIX: dashboard_page.dart writes this via ScopedSharedPreferences,
+      // which actually stores it under 'user_<id>_workers_json', not the
+      // literal 'workers_json' key. Reading the raw key here meant this
+      // local cache always missed, so on any slow/failed network this
+      // page had nothing to fall back to and showed no workers at all.
+      final workersJson = await ScopedSharedPreferences.getString('workers_json');
       
       if (workersJson != null && workersJson.isNotEmpty) {
         final data = json.decode(workersJson);

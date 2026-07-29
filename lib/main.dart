@@ -602,7 +602,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data is List) {
-          await LocalStorageService.saveBackendProducts(data);
+          await LocalStorageService.saveBackendProducts(
+            List<Map<String, dynamic>>.from(data),
+          );
           if (kDebugMode) debugPrint('✅ Synced ${data.length} products');
         }
       }
@@ -1700,4 +1702,3 @@ class _LanguageSelector extends StatelessWidget {
     );
   }
 }
-
