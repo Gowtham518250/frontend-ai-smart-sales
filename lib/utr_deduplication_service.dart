@@ -23,20 +23,24 @@ class UtrDeduplicationService {
   /// Check if a UTR has already been confirmed/registered
   /// Returns true if conflict detected (UTR already exists)
   static Future<bool> checkUtrConflict(String utr) async {
-    try {
-      // Try Redis first for distributed dedup
-      final response = await http.get(
-        Uri.parse('$_redisBaseUrl/check-utr/$utr'),
-        headers: {'Authorization': 'Bearer $_apiKey'},
-      ).timeout(const Duration(seconds: 3));
+    // FIX (Issue 2.5): Skip Redis entirely when the base URL is not configured.
+    // Calling Uri.parse('') on an empty string throws a FormatException.
+    if (_redisBaseUrl.isNotEmpty) {
+      try {
+        // Try Redis first for distributed dedup
+        final response = await http.get(
+          Uri.parse('$_redisBaseUrl/check-utr/$utr'),
+          headers: {'Authorization': 'Bearer $_apiKey'},
+        ).timeout(const Duration(seconds: 3));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return data['conflict'] == true;
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('FIX-C: Redis unavailable for UTR check: $e');
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          return data['conflict'] == true;
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          debugPrint('FIX-C: Redis unavailable for UTR check: $e');
+        }
       }
     }
 
@@ -65,19 +69,22 @@ class UtrDeduplicationService {
     }
 
     // Also try to register in Redis (fire and forget, non-blocking)
-    try {
-      await http
-          .post(
-            Uri.parse('$_redisBaseUrl/register-utr'),
-            body: jsonEncode({'utr': utr}),
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer $_apiKey',
-            },
-          )
-          .timeout(const Duration(seconds: 3));
-    } catch (_) {
-      // Redis failure is non-blocking; local cache is always maintained
+    // FIX (Issue 2.5): Skip Redis call when URL is not configured.
+    if (_redisBaseUrl.isNotEmpty) {
+      try {
+        await http
+            .post(
+              Uri.parse('$_redisBaseUrl/register-utr'),
+              body: jsonEncode({'utr': utr}),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $_apiKey',
+              },
+            )
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {
+        // Redis failure is non-blocking; local cache is always maintained
+      }
     }
   }
 

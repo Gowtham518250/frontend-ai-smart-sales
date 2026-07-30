@@ -25,14 +25,14 @@ class StockValidationService {
       
       if (response.statusCode == 200) {
         final productData = json.decode(response.body);
-        final currentStock = productData['current_stock'] ?? 0;
+        final currentStock = (productData['current_stock'] as num?)?.toInt() ?? 0;
         
         if (currentStock < requestedQuantity) {
           return StockValidationResult(
             isValid: false,
             availableStock: currentStock,
             requestedQuantity: requestedQuantity,
-            shortage: requestedQuantity - currentStock,
+            shortage: (requestedQuantity - currentStock).toInt(),
             message: 'Insufficient stock for $itemName. Available: $currentStock, Requested: $requestedQuantity',
           );
         }
@@ -94,7 +94,7 @@ class StockValidationService {
     return StockValidationResult(
       isValid: allValid,
       availableStock: -1, // Not applicable for batch
-      requestedQuantity: items.fold(0, (sum, item) => sum + item.quantity),
+      requestedQuantity: items.fold<int>(0, (sum, item) => sum + item.quantity),
       shortage: totalShortage,
       message: allValid ? 'All items have sufficient stock' : combinedMessage.trim(),
       requiresManualConfirmation: combinedMessage.isNotEmpty && allValid,

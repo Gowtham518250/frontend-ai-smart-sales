@@ -382,25 +382,22 @@ class ApiClient {
   }
   
   /// 🔒 INPUT SANITIZATION: Sanitize user input before API calls
+  ///
+  /// FIX (Issue 3.1): Removed the regex that stripped `'` and `;` characters.
+  /// That regex silently corrupted legitimate data such as customer names
+  /// containing apostrophes (e.g., "O'Brien") and product descriptions
+  /// containing semicolons. SQL injection is prevented by the backend using
+  /// parameterised queries — client-side stripping is not a valid defence and
+  /// causes data loss.
   static Map<String, dynamic> _sanitizeInput(Map<String, dynamic> data) {
     final sanitized = <String, dynamic>{};
     
     data.forEach((key, value) {
-      // Sanitize string values
       if (value is String) {
-        // Remove potential SQL injection patterns
-        sanitized[key] = value
-            .replaceAll(RegExp(r"[';]"), '')
-            .replaceAll(RegExp(r"--", caseSensitive: false), '')
-            .replaceAll(RegExp(r"/\*.*?\*/", dotAll: true), '')
-            .trim();
-      } 
-      // Sanitize nested maps
-      else if (value is Map<String, dynamic>) {
+        sanitized[key] = value.trim();
+      } else if (value is Map<String, dynamic>) {
         sanitized[key] = _sanitizeInput(value);
-      }
-      // Keep other types as-is
-      else {
+      } else {
         sanitized[key] = value;
       }
     });
@@ -409,16 +406,14 @@ class ApiClient {
   }
   
   /// 🔒 INPUT SANITIZATION: Sanitize form-encoded input
+  ///
+  /// FIX (Issue 3.1): Removed the regex that stripped `'` and `;` characters.
+  /// See _sanitizeInput for the full rationale.
   static Map<String, String> _sanitizeFormInput(Map<String, String> data) {
     final sanitized = <String, String>{};
     
     data.forEach((key, value) {
-      // Remove potential SQL injection patterns
-      sanitized[key] = value
-          .replaceAll(RegExp(r"[';]"), '')
-          .replaceAll(RegExp(r"--", caseSensitive: false), '')
-          .replaceAll(RegExp(r"/\*.*?\*/", dotAll: true), '')
-          .trim();
+      sanitized[key] = value.trim();
     });
     
     return sanitized;
@@ -426,9 +421,9 @@ class ApiClient {
   
   /// 🔒 RETRY LOGIC: Implement exponential backoff retry for transient failures
   static Future<http.Response> _retryWithBackoff(
-    Future<http.Response> Function() request,
+    Future<http.Response> Function() request, {
     int maxRetries = 3,
-  ) async {
+  }) async {
     int retryCount = 0;
     Duration delay = const Duration(seconds: 1);
     
@@ -509,7 +504,7 @@ class ApiClient {
     }
     
     // 🔒 INPUT SANITIZATION: Sanitize input before sending
-    final sanitizedBody = _sanitizeInput(body);
+    final sanitizedBody = _sanitizeInput(body as Map<String, dynamic>);
     if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
     
     // Auth Strict Rate limiting
@@ -651,20 +646,25 @@ class ApiClient {
           if (kDebugMode) debugPrint('⚠️ Token refresh timeout detected, forcing reset');
           await _resetRefreshState();
         } else {
-          // Wait for the active refresh to complete with timeout
-          try {
-            success = await _refreshCompleter!.future.timeout(
-              _refreshTimeout,
-              onTimeout: () {
-                if (kDebugMode) debugPrint('⚠️ Token refresh wait timeout');
-                return false;
-              },
-            );
-          } catch (e) {
-            if (kDebugMode) debugPrint('⚠️ Token refresh wait failed: $e');
-            success = false;
-            // Reset state on error
-            await _resetRefreshState();
+          // FIX (Issue 2.3): Capture _refreshCompleter in a local variable
+          // before the await. The static field can be set to null by
+          // _resetRefreshState() on another code path while we are suspended,
+          // which would cause a null-dereference crash on the `!` operator.
+          final pendingCompleter = _refreshCompleter;
+          if (pendingCompleter != null) {
+            try {
+              success = await pendingCompleter.future.timeout(
+                _refreshTimeout,
+                onTimeout: () {
+                  if (kDebugMode) debugPrint('⚠️ Token refresh wait timeout');
+                  return false;
+                },
+              );
+            } catch (e) {
+              if (kDebugMode) debugPrint('⚠️ Token refresh wait failed: $e');
+              success = false;
+              await _resetRefreshState();
+            }
           }
         }
       } else {
@@ -674,14 +674,17 @@ class ApiClient {
           if (_isRefreshingToken && _refreshCompleter != null && !_refreshCompleter!.isCompleted) {
             // Another thread started refresh while we waited for lock
             if (kDebugMode) debugPrint('⚠️ Refresh already in progress after lock acquisition');
-            try {
-              success = await _refreshCompleter!.future.timeout(
-                _refreshTimeout,
-                onTimeout: () => false,
-              );
-            } catch (e) {
-              if (kDebugMode) debugPrint('⚠️ Token refresh wait failed after lock: $e');
-              success = false;
+            final pendingCompleter = _refreshCompleter;
+            if (pendingCompleter != null) {
+              try {
+                success = await pendingCompleter.future.timeout(
+                  _refreshTimeout,
+                  onTimeout: () => false,
+                );
+              } catch (e) {
+                if (kDebugMode) debugPrint('⚠️ Token refresh wait failed after lock: $e');
+                success = false;
+              }
             }
           } else if (!_isRefreshingToken) {
             // We can start the refresh
@@ -944,7 +947,7 @@ class ApiClient {
     }
     
     // 🔒 INPUT SANITIZATION: Sanitize input before sending
-    final sanitizedBody = _sanitizeInput(body);
+    final sanitizedBody = _sanitizeInput(body as Map<String, dynamic>);
     if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
     
     if (!_rateLimiter.allowRequest(path)) await _rateLimiter.waitIfRateLimited(path);

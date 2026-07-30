@@ -480,7 +480,7 @@ class _DataUploadPageState extends State<DataUploadPage> {
                               Icon(Icons.timer, color: const Color(0xFF0097A7), size: 14),
                               const SizedBox(width: 4),
                               Text(
-                                '${executionTime.toStringAsFixed(2)}s',
+                                '${executionTime?.toStringAsFixed(2) ?? '0.00'}s',
                                 style: TextStyle(
                                   color: const Color(0xFF0097A7),
                                   fontSize: 12,

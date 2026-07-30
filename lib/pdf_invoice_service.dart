@@ -85,7 +85,17 @@ class PdfInvoiceService {
                   child: pw.Row(
                     children: [
                       pw.Expanded(flex: 3, child: pw.Text(name, style: pw.TextStyle(font: font))),
-                      pw.Expanded(flex: 1, child: pw.Text(qty.toStringAsFixed(0), style: pw.TextStyle(font: font), textAlign: pw.TextAlign.center)),
+                      // FIX (Issue 3.3): toStringAsFixed(0) rounds 1.5 → "2", corrupting
+                      // fractional quantities (e.g., 1.5 kg sold as 2 kg on the invoice).
+                      // Use a conditional format: whole numbers show without decimals,
+                      // fractional quantities show up to 3 significant decimal digits.
+                      pw.Expanded(flex: 1, child: pw.Text(
+                        qty == qty.truncateToDouble()
+                            ? qty.toStringAsFixed(0)
+                            : qty.toStringAsFixed(3).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), ''),
+                        style: pw.TextStyle(font: font),
+                        textAlign: pw.TextAlign.center,
+                      )),
                       pw.Expanded(flex: 2, child: pw.Text('Rs ${price.toStringAsFixed(2)}', style: pw.TextStyle(font: font), textAlign: pw.TextAlign.right)),
                       pw.Expanded(flex: 2, child: pw.Text('Rs ${total.toStringAsFixed(2)}', style: pw.TextStyle(font: font), textAlign: pw.TextAlign.right)),
                     ],

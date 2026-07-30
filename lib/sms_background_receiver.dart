@@ -8,6 +8,11 @@ import 'package:telephony/telephony.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:developer' as developer;
 import 'dart:convert';
+import 'dart:math' as math;
+
+/// Prefix used to identify SMS queue keys in SharedPreferences.
+/// Each incoming SMS is stored under a unique key to avoid race conditions.
+const String _kSmsQueuePrefix = 'bg_sms_';
 
 const MethodChannel _nativeChannel = MethodChannel('com.retail_mind/sms_receiver');
 
@@ -25,23 +30,25 @@ Future<void> smsBackgroundHandler(SmsMessage message) async {
   );
 
   try {
-    // Cache the SMS data for processing when app resumes
+    // FIX (Issue 2.1): Store each SMS under a unique key to eliminate the
+    // read-modify-write race condition between the background isolate (writer)
+    // and the main isolate (reader/deleter).
     final prefs = await SharedPreferences.getInstance();
     
-    // Use a single JSON list for the queue to prevent key-mismatch bugs
-    final raw = prefs.getString('bg_sms_queue') ?? '[]';
-    final List<dynamic> queue = jsonDecode(raw);
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final randomSuffix = math.Random().nextInt(999999).toString().padLeft(6, '0');
+    final uniqueKey = '$_kSmsQueuePrefix${timestamp}_$randomSuffix';
     
-    queue.add({
+    final payload = jsonEncode({
       'sender': sender,
       'body': body,
-      'time': DateTime.now().millisecondsSinceEpoch,
+      'time': timestamp,
     });
     
-    await prefs.setString('bg_sms_queue', jsonEncode(queue));
+    await prefs.setString(uniqueKey, payload);
     
     developer.log(
-      'SMS added to background queue. Total pending: ${queue.length}',
+      'SMS stored in background queue with key: $uniqueKey',
       name: 'sms_receiver',
     );
   } catch (e) {
@@ -92,22 +99,51 @@ Future<bool> unregisterSmsBroadcastReceiver() async {
 }
 
 /// Retrieve and clear pending background SMS
+///
+/// FIX (Issue 2.1): Uses atomic per-key reads to prevent data loss.
+/// The reader:
+///   1. Collects the set of keys that were present at call time.
+///   2. Reads and decodes only those specific keys.
+///   3. Deletes only the keys it successfully read.
+/// Any key written by the background isolate *after* step 1 is left intact.
 Future<List<Map<String, String>>> getPendingBackgroundSms() async {
   try {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('bg_sms_queue') ?? '[]';
-    final List<dynamic> list = jsonDecode(raw);
     
-    if (list.isEmpty) return [];
+    // 1. Snapshot the current set of SMS queue keys.
+    final allKeys = prefs.getKeys()
+        .where((k) => k.startsWith(_kSmsQueuePrefix))
+        .toList();
     
-    // Clear queue immediately after reading
-    await prefs.remove('bg_sms_queue');
+    if (allKeys.isEmpty) return [];
     
-    final result = list.map((e) => {
-      'sender': (e['sender'] ?? '').toString(),
-      'body': (e['body'] ?? '').toString(),
-    }).toList();
-
+    // 2. Read and decode each key individually.
+    final result = <Map<String, String>>[];
+    final keysToRemove = <String>[];
+    
+    for (final key in allKeys) {
+      try {
+        final raw = prefs.getString(key);
+        if (raw != null) {
+          final decoded = jsonDecode(raw) as Map<String, dynamic>;
+          result.add({
+            'sender': (decoded['sender'] ?? '').toString(),
+            'body': (decoded['body'] ?? '').toString(),
+          });
+          keysToRemove.add(key);
+        }
+      } catch (e) {
+        developer.log('Error decoding SMS key $key: $e', name: 'sms_receiver');
+        // Still remove the malformed key to avoid it blocking future reads.
+        keysToRemove.add(key);
+      }
+    }
+    
+    // 3. Delete only the keys we successfully processed.
+    for (final key in keysToRemove) {
+      await prefs.remove(key);
+    }
+    
     developer.log(
       'Retrieved ${result.length} pending background SMS',
       name: 'sms_receiver',

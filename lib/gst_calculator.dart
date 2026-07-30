@@ -12,18 +12,27 @@ class GstCalculator {
   }) {
     final priceDecimal = Decimal.parse(price.toString());
     final quantityDecimal = Decimal.fromInt(quantity);
-    final gstRateDecimal = Decimal.parse(gstRate.toString()) / Decimal.fromInt(100);
+    final gstRateDecimal = (Decimal.parse(gstRate.toString()) / Decimal.fromInt(100))
+        .toDecimal(scaleOnInfinitePrecision: 10);
     
     final lineTotal = priceDecimal * quantityDecimal;
     final lineGST = lineTotal * gstRateDecimal;
-    final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scale: 2);
+    final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scaleOnInfinitePrecision: 10);
+    
+    // FIX: Derive totalGST as the sum of the rounded halves so that the
+    // displayed components (cgst + sgst) always equal the displayed total.
+    // Using raw lineGST can differ from halfGST * 2 by ±1 paise.
+    // Use double rounding for simplicity
+    final displayCgst = (halfGST.toDouble() * 100).round() / 100;
+    final displaySgst = (halfGST.toDouble() * 100).round() / 100;
+    final displayTotalGST = displayCgst + displaySgst;
     
     return GstComponents(
       subtotal: lineTotal.toDouble(),
-      cgst: halfGST.toDouble(),
-      sgst: halfGST.toDouble(),
-      totalGST: lineGST.toDouble(),
-      grandTotal: (lineTotal + lineGST).toDouble(),
+      cgst: displayCgst,
+      sgst: displaySgst,
+      totalGST: displayTotalGST,
+      grandTotal: (lineTotal.toDouble() + displayTotalGST),
     );
   }
   
@@ -44,9 +53,10 @@ class GstCalculator {
       totalSubtotal += lineTotal;
       
       if (item.gstRate != null && item.gstRate! > 0) {
-        final gstRate = Decimal.parse(item.gstRate.toString()) / Decimal.fromInt(100);
+        final gstRate = (Decimal.parse(item.gstRate.toString()) / Decimal.fromInt(100))
+            .toDecimal(scaleOnInfinitePrecision: 10);
         final lineGST = lineTotal * gstRate;
-        final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scale: 2);
+        final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scaleOnInfinitePrecision: 10);
         
         totalCGST += halfGST;
         totalSGST += halfGST;
@@ -54,14 +64,16 @@ class GstCalculator {
       }
     }
     
-    final grandTotal = totalSubtotal + totalGST;
+    // FIX: Derive totalGST from the rounded per-item halves to avoid a
+    // display inconsistency where cgst + sgst != totalGST by 1 paise.
+    final displayTotalGST = totalCGST + totalSGST;
     
     return GstComponents(
       subtotal: totalSubtotal.toDouble(),
       cgst: totalCGST.toDouble(),
       sgst: totalSGST.toDouble(),
-      totalGST: totalGST.toDouble(),
-      grandTotal: grandTotal.toDouble(),
+      totalGST: displayTotalGST.toDouble(),
+      grandTotal: (totalSubtotal + displayTotalGST).toDouble(),
     );
   }
   
@@ -74,30 +86,37 @@ class GstCalculator {
   }) {
     final priceDecimal = Decimal.parse(price.toString());
     final quantityDecimal = Decimal.fromInt(quantity);
-    final discountDecimal = Decimal.parse(discountPercent.toString()) / Decimal.fromInt(100);
-    final gstRateDecimal = Decimal.parse(gstRate.toString()) / Decimal.fromInt(100);
+    final discountDecimal = (Decimal.parse(discountPercent.toString()) / Decimal.fromInt(100))
+        .toDecimal(scaleOnInfinitePrecision: 10);
+    final gstRateDecimal = (Decimal.parse(gstRate.toString()) / Decimal.fromInt(100))
+        .toDecimal(scaleOnInfinitePrecision: 10);
     
     final lineTotal = priceDecimal * quantityDecimal;
     final discountAmount = lineTotal * discountDecimal;
     final discountedPrice = lineTotal - discountAmount;
     
     final lineGST = discountedPrice * gstRateDecimal;
-    final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scale: 2);
+    final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scaleOnInfinitePrecision: 10);
+    
+    // Use double rounding for simplicity
+    final cgst = (halfGST.toDouble() * 100).round() / 100;
+    final sgst = (halfGST.toDouble() * 100).round() / 100;
+    final totalGST = (lineGST.toDouble() * 100).round() / 100;
     
     return GstComponents(
       subtotal: lineTotal.toDouble(),
       discountAmount: discountAmount.toDouble(),
       discountedPrice: discountedPrice.toDouble(),
-      cgst: halfGST.toDouble(),
-      sgst: halfGST.toDouble(),
-      totalGST: lineGST.toDouble(),
+      cgst: cgst,
+      sgst: sgst,
+      totalGST: totalGST,
       grandTotal: (discountedPrice + lineGST).toDouble(),
     );
   }
   
   /// Round to 2 decimal places (paise)
   static double roundToPaise(double value) {
-    return (Decimal.parse(value.toString()).toDecimal(scale: 2)).toDouble();
+    return double.parse(Decimal.parse(value.toString()).toStringAsFixed(2));
   }
 }
 

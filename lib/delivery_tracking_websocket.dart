@@ -93,12 +93,31 @@ class DeliveryTrackingWebSocket {
   
   void _handleLocationUpdate(Map<String, dynamic> data) {
     try {
+      // FIX (Issue 5.1): Use safe parsing for coordinates.
+      // The server may send latitude/longitude as a String rather than num,
+      // causing a TypeError crash with a direct `as num` cast.
+      double? parseCoord(dynamic v) {
+        if (v == null) return null;
+        if (v is num) return v.toDouble();
+        return double.tryParse(v.toString());
+      }
+
+      final lat = parseCoord(data['latitude']);
+      final lon = parseCoord(data['longitude']);
+
+      if (lat == null || lon == null) {
+        print('❌ Missing or invalid coordinates in location update');
+        return;
+      }
+
       final update = DeliveryLocationUpdate(
-        latitude: (data['latitude'] as num).toDouble(),
-        longitude: (data['longitude'] as num).toDouble(),
-        status: data['status'] as String,
-        eta: data['eta'] as String?,
-        timestamp: DateTime.parse(data['timestamp'] as String),
+        latitude: lat,
+        longitude: lon,
+        status: (data['status'] ?? '').toString(),
+        eta: data['eta']?.toString(),
+        timestamp: data['timestamp'] != null
+            ? DateTime.tryParse(data['timestamp'].toString()) ?? DateTime.now()
+            : DateTime.now(),
       );
       
       if (!_locationStreamController.isClosed) {

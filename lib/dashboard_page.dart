@@ -99,6 +99,7 @@ import 'widgets/online_analytics_card.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'widgets/dashboard/compact_quick_actions.dart';
 import 'widgets/error_boundary.dart'; // Phase 3: Dashboard crash protection
+import 'performance_optimizations.dart'; // 🚀 Advanced performance optimizations
 
 // color constants for a cohesive shopkeeper-friendly theme
 const Color kPrimaryColor = Color(0xFF6366F1);
@@ -134,7 +135,7 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver, OptimizedStateMixin {
   late final AnimationController _animationController;
   late final ScrollController _scrollController;
   Timer? _refreshTimer;
@@ -2675,6 +2676,7 @@ class _DashboardPageState extends State<DashboardPage>
           // Invalidate metrics cache when sales are loaded
           _cachedTodaySales = null;
           _cachedTodayOrders = null;
+          _cachedTodayOnlineOrders = null; // 🔒 NEW: Invalidate online orders cache
           _lastMetricsCacheDate = null;
           _recalculateAnalytics();
           _computeAndStoreDailyInsight();
@@ -9663,6 +9665,7 @@ class _DashboardPageState extends State<DashboardPage>
     // Use cached metrics to avoid recalculation on every rebuild
     final todaySales = _cachedTodaySales ?? _calculateTodaySales();
     final todayOrders = _cachedTodayOrders ?? _calculateTodayOrders();
+    final todayOnlineOrders = _cachedTodayOnlineOrders ?? _calculateTodayOnlineOrders(); // 🔒 NEW: Online orders
     final lowStockCount = _lowStockProducts.length;
     
     return Container(
@@ -9739,14 +9742,32 @@ class _DashboardPageState extends State<DashboardPage>
             ),
           ),
           const SizedBox(height: 12),
-          // Today's Metrics Row
-          Row(
+          // Today's Metrics Row (2x2 grid for 4 cards)
+          Column(
             children: [
-              _buildMetricCard('Total Sales', '₹${_formatCompactNumber(todaySales)}', Icons.attach_money, const Color(0xFF10B981)), // 🔒 CHANGED: "Today's Revenue" to "Total Sales"
-              const SizedBox(width: 12),
-              _buildMetricCard('Total Bills', todayOrders.toString(), Icons.shopping_cart, const Color(0xFF3B82F6)), // 🔒 CHANGED: "Today's Orders" to "Total Bills"
-              const SizedBox(width: 12),
-              _buildMetricCard('Low Stock', lowStockCount.toString(), Icons.warning, const Color(0xFFF59E0B), isWarning: lowStockCount > 0),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildMetricCard('Total Sales', '₹${_formatCompactNumber(todaySales)}', Icons.attach_money, const Color(0xFF10B981)), // 🔒 CHANGED: "Today's Revenue" to "Total Sales"
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _buildMetricCard('Total Bills', todayOrders.toString(), Icons.shopping_cart, const Color(0xFF3B82F6)), // 🔒 CHANGED: "Today's Orders" to "Total Bills"
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildMetricCard('Online Orders', todayOnlineOrders.toString(), Icons.language, const Color(0xFF6366F1)), // 🔒 NEW: Added Online Orders
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _buildMetricCard('Low Stock', lowStockCount.toString(), Icons.warning, const Color(0xFFF59E0B), isWarning: lowStockCount > 0),
+                  ),
+                ],
+              ),
             ],
           ),
         ],
@@ -9755,38 +9776,36 @@ class _DashboardPageState extends State<DashboardPage>
   }
   
   Widget _buildMetricCard(String label, String value, IconData icon, Color color, {bool isWarning = false}) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withOpacity(0.2)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(height: 6),
-            Text(
-              label,
-              style: GoogleFonts.poppins(
-                fontSize: 10,
-                color: const Color(0xFF64748B),
-                fontWeight: FontWeight.w500,
-              ),
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: 10,
+              color: const Color(0xFF64748B),
+              fontWeight: FontWeight.w500,
             ),
-            const SizedBox(height: 2),
-            Text(
-              value,
-              style: GoogleFonts.poppins(
-                fontSize: 14,
-                color: isWarning ? const Color(0xFFEF4444) : const Color(0xFF1E293B),
-                fontWeight: FontWeight.bold,
-              ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: GoogleFonts.poppins(
+              fontSize: 14,
+              color: isWarning ? const Color(0xFFEF4444) : const Color(0xFF1E293B),
+              fontWeight: FontWeight.bold,
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -9830,6 +9849,30 @@ class _DashboardPageState extends State<DashboardPage>
     }
     
     return count;
+  }
+
+  int _calculateTodayOnlineOrders() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    
+    final Set<String> onlineInvoices = {};
+    for (final sale in sales) {
+      try {
+        final saleDate = _getLocalDate(sale);
+        final saleDateOnly = DateTime(saleDate.year, saleDate.month, saleDate.day);
+        if (saleDateOnly == today) {
+          final String source = (sale['source'] ?? sale['order_source'] ?? 'OFFLINE').toString().toUpperCase();
+          if (source == 'ONLINE' || source == 'WEB' || source == 'APP') {
+            final invoiceKey = (sale['created_at'] ?? sale['sale_date'] ?? sale['date'] ?? '').toString();
+            if (invoiceKey.isNotEmpty) {
+              onlineInvoices.add(invoiceKey);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    
+    return onlineInvoices.isEmpty && sales.isNotEmpty ? 0 : onlineInvoices.length;
   }
 
   String _monthShort(int m) {
@@ -11134,7 +11177,7 @@ class _DashboardPageState extends State<DashboardPage>
                                   path,
                                 );
                                 if (capture != null &&
-                                    capture.barcades.any(
+                                    capture.barcodes.any(
                                       (b) => b.format == BarcodeFormat.qrCode,
                                     )) {
                                   isValidQr = true;

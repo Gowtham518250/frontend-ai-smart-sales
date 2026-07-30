@@ -14,15 +14,28 @@ import 'session_management.dart';
 class EnhancedLocalStorageService {
   static const int _schemaVersion = 4; // Updated for UUID support
   static const String _schemaVersionKey = 'enhanced_schema_version';
-  
-  // Enhanced box names with UUID support
-  static const String _salesBox = 'sales_uuid_v2';
-  static const String _productsBox = 'products_uuid_v2';
-  static const String _customersBox = 'customers_uuid_v2';
-  static const String _invoicesBox = 'invoices_uuid_v2';
-  static const String _expensesBox = 'expenses_uuid_v2';
-  static const String _inventoryBox = 'inventory_uuid_v2';
-  static const String _suppliersBox = 'suppliers_uuid_v2';
+
+  // FIX (Issue 2.2): userId-scoped box names so each user's data is isolated.
+  // Call initialize(userId: ...) before any storage operations.
+  static String _userId = 'guest';
+
+  static String get _salesBox     => 'sales_uuid_v2_$_userId';
+  static String get _productsBox  => 'products_uuid_v2_$_userId';
+  static String get _customersBox => 'customers_uuid_v2_$_userId';
+  static String get _invoicesBox  => 'invoices_uuid_v2_$_userId';
+  static String get _expensesBox  => 'expenses_uuid_v2_$_userId';
+  static String get _inventoryBox => 'inventory_uuid_v2_$_userId';
+  static String get _suppliersBox => 'suppliers_uuid_v2_$_userId';
+
+  // Legacy (un-scoped) box names used before this fix.
+  // Referenced during migration only.
+  static const String _legacySalesBox     = 'sales_uuid_v2';
+  static const String _legacyProductsBox  = 'products_uuid_v2';
+  static const String _legacyCustomersBox = 'customers_uuid_v2';
+  static const String _legacyInvoicesBox  = 'invoices_uuid_v2';
+  static const String _legacyExpensesBox  = 'expenses_uuid_v2';
+  static const String _legacyInventoryBox = 'inventory_uuid_v2';
+  static const String _legacySuppliersBox = 'suppliers_uuid_v2';
   
   static final Lock _lock = Lock();
   static EnhancedLocalStorageService? _instance;
@@ -34,8 +47,14 @@ class EnhancedLocalStorageService {
     return _instance!;
   }
   
-  /// Initialize enhanced storage with UUID support
-  static Future<void> initialize() async {
+  /// Initialize enhanced storage with UUID support.
+  ///
+  /// [userId] MUST be the authenticated user's ID so that each user's Hive
+  /// boxes are kept separate (FIX Issue 2.2). Fall back to `'guest'` only
+  /// for unauthenticated bootstrap.
+  static Future<void> initialize({String userId = 'guest'}) async {
+    _userId = userId.isEmpty ? 'guest' : userId;
+
     await Hive.openBox(_salesBox);
     await Hive.openBox(_productsBox);
     await Hive.openBox(_customersBox);
@@ -71,12 +90,78 @@ class EnhancedLocalStorageService {
     }
   }
   
-  /// Migrate existing data to UUID-based schema
+  /// Migrate existing data to UUID-based schema.
+  ///
+  /// FIX (Issue 2.4): Copies records from the old un-scoped legacy boxes into
+  /// the new user-scoped boxes. Records that already have a `uuid` field are
+  /// treated as already migrated and skipped.
   static Future<void> _migrateToUUIDSchema(int fromVersion) async {
-    // Migration logic for converting old IDs to UUIDs
-    // This would be implemented based on the previous schema
     if (kDebugMode) {
-      debugPrint('🔄 UUID migration from version $fromVersion');
+      debugPrint('🔄 UUID migration from version $fromVersion for user: $_userId');
+    }
+
+    // Pairs of (legacy box name, current scoped box getter).
+    final migrations = [
+      [_legacySalesBox,     _salesBox],
+      [_legacyProductsBox,  _productsBox],
+      [_legacyCustomersBox, _customersBox],
+      [_legacyInvoicesBox,  _invoicesBox],
+      [_legacyExpensesBox,  _expensesBox],
+      [_legacyInventoryBox, _inventoryBox],
+      [_legacySuppliersBox, _suppliersBox],
+    ];
+
+    for (final pair in migrations) {
+      final legacyBoxName  = pair[0];
+      final currentBoxName = pair[1];
+
+      // Skip if both names are the same (already scoped from a previous run).
+      if (legacyBoxName == currentBoxName) continue;
+
+      try {
+        // Open the legacy box (read-only intent).
+        final legacyBox = await Hive.openBox(legacyBoxName);
+
+        if (legacyBox.isEmpty) {
+          continue;
+        }
+
+        final currentBox = Hive.box(currentBoxName);
+
+        for (final rawKey in legacyBox.keys) {
+          final value = legacyBox.get(rawKey);
+          if (value == null) continue;
+
+          try {
+            final record = value as Map<String, dynamic>;
+
+            // Assign a UUID if the record doesn't have one.
+            final uuid = record['uuid'] as String? ?? UuidService.generate();
+            final migratedRecord = {
+              ...record,
+              'uuid': uuid,
+            };
+
+            // Only write if not already present in the scoped box.
+            if (currentBox.get(uuid) == null) {
+              await currentBox.put(uuid, migratedRecord);
+            }
+          } catch (e) {
+            if (kDebugMode) {
+              debugPrint('⚠️ Skipping corrupt record during migration: $e');
+            }
+          }
+        }
+
+        if (kDebugMode) {
+          debugPrint('✅ Migrated ${legacyBox.length} records from $legacyBoxName → $currentBoxName');
+        }
+      } catch (e) {
+        // Legacy box may not exist on fresh installs — that is expected.
+        if (kDebugMode) {
+          debugPrint('ℹ️ Legacy box $legacyBoxName not found (fresh install?): $e');
+        }
+      }
     }
   }
   

@@ -39,6 +39,16 @@ class _CustomerForgotPasswordPageState extends State<CustomerForgotPasswordPage>
   void dispose() {
     _timer?.cancel();
     _animController.dispose();
+    // FIX: Dispose all controllers and focus nodes to prevent memory leaks.
+    _phoneController.dispose();
+    _emailController.dispose();
+    _newPassController.dispose();
+    for (final c in _otpControllers) {
+      c.dispose();
+    }
+    for (final f in _otpFocusNodes) {
+      f.dispose();
+    }
     super.dispose();
   }
 

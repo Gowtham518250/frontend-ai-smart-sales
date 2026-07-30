@@ -2,9 +2,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
-import 'dart:math';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 class SecureTokenStorage {
   static const FlutterSecureStorage _storage = FlutterSecureStorage();
@@ -48,7 +49,9 @@ class SecureTokenStorage {
       try {
         return enc.Key.fromBase64(stored);
       } catch (e) {
-        if (kDebugMode) debugPrint('⚠️ Failed to parse stored key, generating new one: $e');
+        if (kDebugMode) {
+          print('⚠️ Failed to parse stored key, generating new one: $e');
+        }
         // Continue to generate new key if parsing fails
       }
     }
@@ -64,14 +67,18 @@ class SecureTokenStorage {
     final key = enc.Key(Uint8List.fromList(keyBytes));
     await _storage.write(key: _kKey, value: key.base64);
     
-    if (kDebugMode) debugPrint('✅ Generated new encryption key with salt');
+    if (kDebugMode) {
+      print('✅ Generated new encryption key with salt');
+    }
     return key;
   }
   
   /// Rotate encryption key for enhanced security
   static Future<void> rotateKey() async {
     try {
-      if (kDebugMode) debugPrint('🔄 Rotating encryption key...');
+      if (kDebugMode) {
+        print('🔄 Rotating encryption key...');
+      }
       
       // Get old key
       final oldKey = await _getOrCreateKey();
@@ -89,9 +96,13 @@ class SecureTokenStorage {
       await _storage.write(key: '${_kKey}_salt', value: base64UrlEncode(newSalt));
       await _storage.write(key: _kKey, value: newKey.base64);
       
-      if (kDebugMode) debugPrint('✅ Encryption key rotated successfully');
+      if (kDebugMode) {
+        print('✅ Encryption key rotated successfully');
+      }
     } catch (e) {
-      if (kDebugMode) debugPrint('❌ Key rotation failed: $e');
+      if (kDebugMode) {
+        print('❌ Key rotation failed: $e');
+      }
       rethrow;
     }
   }
@@ -100,7 +111,9 @@ class SecureTokenStorage {
   static Future<void> _reencryptData(enc.Key oldKey, enc.Key newKey) async {
     // This would re-encrypt all stored data with the new key
     // Implementation depends on what data needs to be re-encrypted
-    if (kDebugMode) debugPrint('🔄 Re-encrypting data with new key...');
+    if (kDebugMode) {
+      print('🔄 Re-encrypting data with new key...');
+    }
     // Add re-encryption logic here if needed
   }
 

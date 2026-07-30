@@ -186,8 +186,8 @@ class _SalesEntryPageState extends State<SalesEntryPage>
         // Find existing row with this name or empty row with null safety
         int targetIdx = entries.indexWhere((e) {
           try {
-            return e['item']?.text.isEmpty || 
-                   (e['item']?.text.isNotEmpty && e['item']!.text.toUpperCase() == name.toUpperCase());
+            return (e['item']?.text.isEmpty ?? true) || 
+                   ((e['item']?.text.isNotEmpty ?? false) && e['item']!.text.toUpperCase() == name.toUpperCase());
           } catch (e) {
             return false; // Skip invalid entries
           }
@@ -1068,8 +1068,8 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       // Cleanup: Logic to replace last empty row OR add new
       int targetIdx = -1;
       for (int i = 0; i < entries.length; i++) {
-        if (entries[i]['item']?.text.isEmpty ?? true &&
-            entries[i]['price']?.text.isEmpty ?? true) {
+        if ((entries[i]['item']?.text.isEmpty ?? true) &&
+            (entries[i]['price']?.text.isEmpty ?? true)) {
           targetIdx = i;
           break;
         }
@@ -2388,6 +2388,44 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     }
   }
 
+  // Looks up any active flash sale from SharedPreferences (async), applies it
+  // to _flashSaleDiscount, and re-runs calculateTotal() so the displayed
+  // total picks up the discount once it's known.
+  Future<void> _applyFlashSaleDiscount(double subTotal) async {
+    double flashSaleDiscount = 0.0;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final flashSaleData = prefs.getString('active_flash_sale');
+
+      if (flashSaleData != null && flashSaleData.isNotEmpty) {
+        final flashSale = jsonDecode(flashSaleData);
+        final expiry = DateTime.parse(flashSale['expiry']);
+
+        // Check if flash sale is still valid
+        if (DateTime.now().isBefore(expiry)) {
+          final discountPercent = double.tryParse(flashSale['discount']?.toString() ?? '0') ?? 0;
+          if (discountPercent > 0) {
+            flashSaleDiscount = subTotal * (discountPercent / 100);
+            if (kDebugMode) debugPrint('✅ Flash sale discount applied: ${discountPercent}% = ₹$flashSaleDiscount');
+          }
+        } else {
+          // Flash sale expired, clear local data
+          await prefs.remove('active_flash_sale');
+          if (kDebugMode) debugPrint('⏰ Flash sale expired during sale, cleared');
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Error applying flash sale discount: $e');
+    }
+
+    if (mounted && flashSaleDiscount != _flashSaleDiscount) {
+      setState(() {
+        _flashSaleDiscount = flashSaleDiscount;
+      });
+      calculateTotal();
+    }
+  }
+
   Map<String, double> calculateTotal() {
     double subTotal = 0.0;
     double gstTotal = 0.0;
@@ -2428,41 +2466,19 @@ class _SalesEntryPageState extends State<SalesEntryPage>
 
       final schemeResult =
           SchemeEngine.applyBestScheme(schemeItems, subTotal);
-      
-      // Apply flash sale discount if active
-      double flashSaleDiscount = 0.0;
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final flashSaleData = prefs.getString('active_flash_sale');
-        
-        if (flashSaleData != null && flashSaleData.isNotEmpty) {
-          final flashSale = jsonDecode(flashSaleData);
-          final expiry = DateTime.parse(flashSale['expiry']);
-          
-          // Check if flash sale is still valid
-          if (DateTime.now().isBefore(expiry)) {
-            final discountPercent = double.tryParse(flashSale['discount']?.toString() ?? '0') ?? 0;
-            if (discountPercent > 0) {
-              flashSaleDiscount = subTotal * (discountPercent / 100);
-              if (kDebugMode) debugPrint('✅ Flash sale discount applied: ${discountPercent}% = ₹$flashSaleDiscount');
-            }
-          } else {
-            // Flash sale expired, clear local data
-            await prefs.remove('active_flash_sale');
-            if (kDebugMode) debugPrint('⏰ Flash sale expired during sale, cleared');
-          }
-        }
-      } catch (e) {
-        if (kDebugMode) debugPrint('⚠️ Error applying flash sale discount: $e');
-      }
-      
+
       if (mounted) {
         setState(() {
           _schemeDiscount = (schemeResult['discount_amount'] as num?)?.toDouble() ?? 0;
-          _flashSaleDiscount = flashSaleDiscount;
           _activeSchemeName = schemeResult['scheme_name']?.toString() ?? '';
         });
       }
+
+      // Flash sale discount requires an async SharedPreferences lookup, so it
+      // can't be resolved inside this synchronous method. Kick it off here;
+      // once it resolves, it updates _flashSaleDiscount and triggers a
+      // recalculation so the total reflects it.
+      _applyFlashSaleDiscount(subTotal);
 
       final totalDiscount = _schemeDiscount + _flashSaleDiscount;
       if (totalDiscount > 0) {

@@ -25,7 +25,11 @@ class CurrencyManager {
   /// Secure multiplication (e.g., price * qty)
   /// Always use for price calculations
   static double multiply(double price, double qty) {
-    return ((price * 100).round() * qty) / 100;
+    // FIX: Round the final result to 2 decimal places (paise precision).
+    // The original implementation rounded only the price operand which left
+    // the product of a fractional qty unrounded, e.g. 99.99 * 3.5 produced
+    // 349.96499999... instead of 349.97.
+    return (((price * 100).round() * qty) / 100 * 100).round() / 100;
   }
   
   /// Calculate GST amount safely (uses integer math on paise)

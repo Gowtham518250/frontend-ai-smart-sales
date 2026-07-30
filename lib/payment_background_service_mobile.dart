@@ -1,4 +1,4 @@
-import 'dart:async';
+// dart:async import removed — Timer was removed in Issue 4.1 fix.
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -51,9 +51,10 @@ Future<bool> onStart(ServiceInstance service) async {
     return false;
   }
 
-  Timer.periodic(const Duration(seconds: 1), (timer) async {
-    service.invoke('update');
-  });
+  // FIX (Issue 4.1): Removed Timer.periodic(1 second) that was calling
+  // service.invoke('update') every second, causing constant CPU wake locks
+  // and significant battery drain. The PaymentDetectionService is
+  // event-driven (SMS/notifications), so no polling timer is required.
 
   return true;
 }

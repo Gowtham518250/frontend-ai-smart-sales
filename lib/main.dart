@@ -51,7 +51,6 @@ import 'session_management.dart';
 import 'qr_scanner_page_stub.dart'
   if (dart.library.io) 'qr_scanner_page.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
-import 'package:async/async.dart' show CancelToken;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'shop_profile_page.dart';
 import 'owner_biometric_register_page.dart';
@@ -152,7 +151,7 @@ void main() async {
             authDomain: authDomain.isNotEmpty ? authDomain : '$projectId.firebaseapp.com',
             projectId: projectId,
             storageBucket: storageBucket.isNotEmpty ? storageBucket : '$projectId.appspot.com',
-            messagingSenderId: messagingSenderId.isNotEmpty ? messagingSenderId : null,
+            messagingSenderId: messagingSenderId.isNotEmpty ? messagingSenderId : '123456789',
             appId: appId,
           ),
         );
@@ -272,9 +271,9 @@ void main() async {
   }
   
   // Store Firebase initialization state for feature flagging (if not already set)
-  final prefs = await SharedPreferences.getInstance();
-  if (!prefs.containsKey('firebase_initialized')) {
-    await prefs.setBool('firebase_initialized', firebaseInitialized);
+  final firebasePrefs = await SharedPreferences.getInstance();
+  if (!firebasePrefs.containsKey('firebase_initialized')) {
+    await firebasePrefs.setBool('firebase_initialized', firebaseInitialized);
   }
   
   // 🔊 Background service initialization deferred to post-frame callback in MyApp to prevent startup crashes
@@ -486,12 +485,11 @@ void main() async {
     // Continue startup even if new services fail - they have fallbacks
   }
 
-  final prefs = await SharedPreferences.getInstance();
-  
   // Set up email credentials once in secure storage
   
-  final langCode = prefs.getString('payment_sound_lang') ?? 'en-US';
-  final soundEnabled = prefs.getBool('payment_sound_enabled') ?? true;
+  final appPrefs = await SharedPreferences.getInstance();
+  final langCode = appPrefs.getString('payment_sound_lang') ?? 'en-US';
+  final soundEnabled = appPrefs.getBool('payment_sound_enabled') ?? true;
   PdsConfig.isVoiceEnabled = soundEnabled;
   
   // Background heavy initializations (Run asynchronously to drastically speed up app launch)
@@ -501,7 +499,7 @@ void main() async {
       // 1. Move the heavy DB purging here so it doesn't block the UI thread
       await LocalStorageService.validateAndMigrateSchema();
       await LocalStorageService.purgeLegacyUnscopedHiveBoxes();
-      final startupUserId = prefs.getInt('user_id') ?? prefs.getInt('userId') ?? 0;
+      final startupUserId = appPrefs.getInt('user_id') ?? appPrefs.getInt('userId') ?? 0;
       if (startupUserId > 0) {
         await LocalStorageService.clearOrphanSalesBoxes();
         await LocalStorageService.purgeLegacyPrefsSales();
@@ -527,8 +525,7 @@ void main() async {
       
       // Connect PDS brain to Voice engine
       pds.onSpeak = (text) async {
-        final prefs = await SharedPreferences.getInstance();
-        final lang = prefs.getString('payment_sound_lang') ?? 'en-US';
+        final lang = appPrefs.getString('payment_sound_lang') ?? 'en-US';
         PaymentAnnouncementService().speakSimple(text, lang);
       };
       
@@ -543,7 +540,7 @@ void main() async {
       // 🔧 FIX: Auto-refresh session on app startup - OFFLINE-FIRST MODE
       // Try to refresh session if online, but don't force logout if offline
       try {
-        final startupUserId = prefs.getInt('user_id') ?? prefs.getInt('userId') ?? 0;
+        final startupUserId = appPrefs.getInt('user_id') ?? appPrefs.getInt('userId') ?? 0;
         if (startupUserId > 0) {
           // Check if user has a valid local session (token exists)
           final hasValidSession = await SessionManagementService.isTokenValid();
@@ -625,6 +622,17 @@ class OperationCancelledException implements Exception {
   
   @override
   String toString() => 'OperationCancelledException: $message';
+}
+
+// Lightweight cancellation token for background sync operations.
+// (Not from package:async — that package has no CancelToken class;
+// this is a minimal local stand-in for dio's CancelToken.)
+class CancelToken {
+  bool _isCancelled = false;
+  bool get isCancelled => _isCancelled;
+  void cancel() {
+    _isCancelled = true;
+  }
 }
 
 class _AppBootSplash extends StatelessWidget {
@@ -1051,8 +1059,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   }
 
   Future<bool> _checkLogin() async {
-    final prefs = await SharedPreferences.getInstance();
-    _hasSeenOnboarding = prefs.getBool('has_seen_onboarding') ?? false;
+    final loginPrefs = await SharedPreferences.getInstance();
+    _hasSeenOnboarding = loginPrefs.getBool('has_seen_onboarding') ?? false;
 
     // 7-day auto-login logic implementation
     final isValid = await SecureTokenStorage.isSessionValid();
@@ -1060,8 +1068,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     // Restore shop profile from SharedPreferences if available
     if (isValid) {
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final shopProfileJson = prefs.getString('shop_profile_json');
+        final shopProfileJson = loginPrefs.getString('shop_profile_json');
         if (shopProfileJson != null && shopProfileJson.isNotEmpty) {
           // Profile will be automatically loaded by dashboard
           if (kDebugMode) print('✅ Shop profile restored from local storage');
@@ -1072,7 +1079,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     }
     
     if (isValid) {
-      final userId = prefs.getInt('user_id') ?? prefs.getInt('userId') ?? 0;
+      final userId = loginPrefs.getInt('user_id') ?? loginPrefs.getInt('userId') ?? 0;
       if (userId <= 0) {
         await SessionLogoutService.performFullLogout(notifyServer: false);
         return false;
@@ -1106,8 +1113,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 future: (() async {
                   if (booting) return '/_boot';
                   if (!authed) return '/login';
-                  final prefs = await SharedPreferences.getInstance();
-                  final role = prefs.getString('user_role') ?? 'OWNER';
+                  final routePrefs = await SharedPreferences.getInstance();
+                  final role = routePrefs.getString('user_role') ?? 'OWNER';
                   if (role == 'CUSTOMER') return '/nearby-shops';
                   if (role == 'WORKER') return '/attendance';
                   return '/dashboard';

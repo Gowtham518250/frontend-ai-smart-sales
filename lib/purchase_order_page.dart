@@ -58,11 +58,22 @@ class _PurchaseOrderPageState extends State<PurchaseOrderPage> {
     await LocalStorageService.savePurchaseOrders(orders);
     setState(() => _orders = List<dynamic>.from(orders));
 
-    // 🔧 FIX: previously nothing here ever told the backend a purchase
-    // order was created — it only ever lived in local (on-device) storage.
-    // Enqueue it on the same durable, auto-retrying sync queue used for
-    // sales, so it reaches the server even if we're offline right now.
-    await SyncQueueManager.enqueue('create_purchase_order', order);
+    // 🔧 FIX: Transform order structure to match backend expectations before syncing
+    // Backend expects: supplier_name (not supplier), items with product_id/quantity/unit_cost
+    final backendOrder = {
+      'supplier_name': order['supplier_name'] ?? order['supplier'],
+      'expected_delivery': order['expected_delivery'],
+      'items': (order['items'] as List?)?.map((item) => {
+        'product_id': item['product_id'],
+        'product_name': item['product_name'],
+        'quantity': item['quantity'],
+        'unit_cost': item['unit_cost'] ?? item['unit_price'] ?? 0.0,
+      }).toList(),
+      'notes': order['notes'],
+    };
+
+    // Enqueue it on the same durable, auto-retrying sync queue used for sales
+    await SyncQueueManager.enqueue('create_purchase_order', backendOrder);
     unawaited(SyncService.processQueueSafe());
   }
 
@@ -106,11 +117,9 @@ class _PurchaseOrderPageState extends State<PurchaseOrderPage> {
       // storage — the backend never learned about it, so purchase orders
       // stayed "PENDING" server-side forever. Enqueue the status change
       // the same durable way sales updates are enqueued.
-      await SyncQueueManager.enqueue('receive_purchase_order', {
-        'order_id': order['id'],
-        'status': 'RECEIVED',
-        'received_at': order['received_at'],
-        'items': order['items'],
+      await SyncQueueManager.enqueue('update_purchase_order_status', {
+        'po_id': order['id'],
+        'po_action': 'mark-delivered',
       });
       unawaited(SyncService.processQueueSafe());
       
@@ -134,96 +143,207 @@ class _PurchaseOrderPageState extends State<PurchaseOrderPage> {
 
   void _showCreateOrderDialog() {
     final supplierController = TextEditingController();
-    final amountController = TextEditingController();
     final noteController = TextEditingController();
+    List<Map<String, dynamic>> orderItems = [];
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          padding: EdgeInsets.only(
-            left: 24,
-            right: 24,
-            top: 24,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('New Purchase Order', style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 16),
-              TextField(
-                controller: supplierController,
-                decoration: InputDecoration(
-                  labelText: 'Supplier',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                ),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: amountController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: 'Order Value (₹)',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                ),
+              padding: EdgeInsets.only(
+                left: 24,
+                right: 24,
+                top: 24,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: noteController,
-                decoration: InputDecoration(
-                  labelText: 'Item / Note',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    final supplier = supplierController.text.trim();
-                    final amount = double.tryParse(amountController.text.trim()) ?? 0.0;
-                    if (supplier.isEmpty || amount <= 0) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Supplier and amount are required')),
-                      );
-                      return;
-                    }
-
-                    final order = {
-                      'id': DateTime.now().millisecondsSinceEpoch.toString(),
-                      'supplier': supplier,
-                      'amount': amount,
-                      'created_at': DateTime.now().toIso8601String(),
-                      'status': 'PENDING',
-                      'notes': noteController.text.trim(),
-                    };
-
-                    await _saveLocalOrder(order);
-                    if (mounted) Navigator.pop(context);
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Purchase order saved locally')),
-                      );
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6366F1),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('New Purchase Order', style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: supplierController,
+                    decoration: InputDecoration(
+                      labelText: 'Supplier Name',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
                   ),
-                  child: const Text('Create Order'),
-                ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: noteController,
+                    decoration: InputDecoration(
+                      labelText: 'Notes (optional)',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('Items (at least one required)', style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  ...orderItems.asMap().entries.map((entry) {
+                    final index = entry.key;
+                    final item = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(item['product_name']?.toString() ?? 'Unknown', style: GoogleFonts.poppins(fontSize: 14)),
+                          ),
+                          Text('Qty: ${item['quantity']}', style: GoogleFonts.poppins(fontSize: 14)),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle, color: Colors.red),
+                            onPressed: () {
+                              setModalState(() {
+                                orderItems.removeAt(index);
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      // Show product picker dialog
+                      final products = await LocalStorageService.loadBackendProducts();
+                      if (!mounted) return;
+                      
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Select Product'),
+                          content: SizedBox(
+                            width: double.maxFinite,
+                            height: 300,
+                            child: ListView.builder(
+                              itemCount: products.length,
+                              itemBuilder: (context, index) {
+                                final product = products[index];
+                                return ListTile(
+                                  title: Text(product['product_name']?.toString() ?? 'Unknown'),
+                                  subtitle: Text('Stock: ${product['current_stock'] ?? 0}'),
+                                  onTap: () {
+                                    Navigator.pop(context, product);
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ).then((selectedProduct) async {
+                        if (selectedProduct != null && mounted) {
+                          // Show quantity dialog
+                          final quantityController = TextEditingController(text: '1');
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Enter Quantity'),
+                              content: TextField(
+                                controller: quantityController,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: 'Quantity',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context),
+                                  child: const Text('Cancel'),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    final quantity = int.tryParse(quantityController.text) ?? 1;
+                                    if (quantity > 0) {
+                                      setModalState(() {
+                                        orderItems.add({
+                                          'product_id': selectedProduct['id'],
+                                          'product_name': selectedProduct['product_name'],
+                                          'quantity': quantity,
+                                          'unit_cost': selectedProduct['price'] ?? 0.0,
+                                        });
+                                      });
+                                    }
+                                    Navigator.pop(context);
+                                  },
+                                  child: const Text('Add'),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                      });
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add Item'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF6366F1),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        final supplierName = supplierController.text.trim();
+                        if (supplierName.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Supplier name is required')),
+                          );
+                          return;
+                        }
+                        if (orderItems.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('At least one item is required')),
+                          );
+                          return;
+                        }
+
+                        // 🔧 FIX: Create order with backend-compatible structure
+                        final order = {
+                          'id': DateTime.now().millisecondsSinceEpoch.toString(),
+                          'supplier_name': supplierName, // Changed from 'supplier' to 'supplier_name'
+                          'items': orderItems, // Now includes proper items array
+                          'created_at': DateTime.now().toIso8601String(),
+                          'status': 'PENDING',
+                          'notes': noteController.text.trim(),
+                          'total_cost': orderItems.fold<double>(
+                            0.0,
+                            (sum, item) => sum + ((item['quantity'] as int) * (item['unit_cost'] as num? ?? 0.0).toDouble()),
+                          ),
+                        };
+
+                        await _saveLocalOrder(order);
+                        if (mounted) Navigator.pop(context);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Purchase order saved locally')),
+                          );
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6366F1),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                      child: const Text('Create Order'),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );

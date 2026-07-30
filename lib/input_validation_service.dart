@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 
 /// Comprehensive Input Validation Service
 /// Provides validation for all user inputs across the application
@@ -296,7 +295,7 @@ class InputValidationService {
   /// Sanitize text input to prevent XSS
   String sanitizeText(String text) {
     // Remove potentially dangerous characters
-    final dangerousChars = RegExp(r'[<>\"\'&]');
+    final dangerousChars = RegExp('[<>"\'&]');
     return text.replaceAll(dangerousChars, '');
   }
   
@@ -369,7 +368,7 @@ class InputValidationService {
   
   /// Check if character is special character
   bool _isSpecialChar(String char) {
-    const specialChars = '!@#$%^&*()_+-=[]{}|;:,.<>?';
+    const specialChars = r'!@#$%^&*()_+-=[]{}|;:,.<>?';
     return specialChars.contains(char);
   }
   

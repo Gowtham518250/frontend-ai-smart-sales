@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -208,44 +207,15 @@ class ErrorBoundaryProvider extends InheritedWidget {
     super.key,
     required this.onError,
     required Widget child,
-  }) : super(key: key, child: child);
+  }) : super(child: child);
 
   static ErrorBoundaryProvider of(BuildContext context) {
-    return context.dependOn<ErrorBoundaryProvider>();
+    return context.dependOnInheritedWidgetOfExactType<ErrorBoundaryProvider>()!;
   }
 
   @override
   bool updateShouldNotify(ErrorBoundaryProvider oldWidget) {
     return oldWidget.onError != onError;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return _ErrorBoundaryWrapper(
-      onError: onError,
-      child: child,
-    );
-  }
-}
-
-class _ErrorBoundaryWrapper extends StatefulWidget {
-  final Function(dynamic error, StackTrace?) onError;
-  final Widget child;
-
-  const _ErrorBoundaryWrapper({
-    super.key,
-    required this.onError,
-    required this.child,
-  });
-
-  @override
-  State<_ErrorBoundaryWrapper> createState() => _ErrorBoundaryWrapperState();
-}
-
-class _ErrorBoundaryWrapperState extends State<_ErrorBoundaryWrapper> {
-  @override
-  Widget build(BuildContext context) {
-    return child;
   }
 }
 
@@ -263,11 +233,10 @@ mixin ErrorBoundaryMixin<T extends StatefulWidget> on State<T> {
 
   void reportError(dynamic error, StackTrace? stackTrace) {
     // Find error boundary and report error
-    final context = context;
     ErrorBoundaryProvider? boundary;
     
-    if (context.mounted) {
-      boundary = context.dependOn<ErrorBoundaryProvider>();
+    if (mounted) {
+      boundary = context.dependOnInheritedWidgetOfExactType<ErrorBoundaryProvider>();
     }
     
     if (boundary != null) {

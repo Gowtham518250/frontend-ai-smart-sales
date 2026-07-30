@@ -146,15 +146,17 @@ class BackgroundSyncWorker {
   }
   
   /// 🔒 DATA VALIDATION: Validate operation data before sending to backend
-  Future<ValidationResult> _validateOperationData(QueuedOperation operation) async {
+  Future<ValidationResult> _validateOperationData(Operation operation) async {
     try {
-      final data = operation.data;
+      final data = operation.payload;
       
       // Validate based on operation type
-      switch (operation.action) {
-        case 'save_sale':
+      switch (operation.type.toOperationString()) {
+        case 'create_sale':
+        case 'update_sale':
           return DataValidationService.instance.validateSingleSale(data);
-        case 'save_customer':
+        case 'create_customer':
+        case 'update_customer':
           // Validate customer data
           if (data['phone'] != null) {
             final phone = data['phone'].toString();
@@ -168,57 +170,7 @@ class BackgroundSyncWorker {
             }
           }
           return ValidationResult(isValid: true, message: 'Customer data valid');
-        case 'update_inventory':
-          // Validate inventory data
-          if (data['current_stock'] != null) {
-            final stock = int.tryParse(data['current_stock'].toString());
-            if (stock == null || stock < 0) {
-              return ValidationResult(
-                isValid: false,
-                message: 'Invalid stock value',
-                issues: ['Invalid stock: ${data['current_stock']}'],
-                issueCount: 1,
-              );
-            }
-          }
-          return ValidationResult(isValid: true, message: 'Inventory data valid');
-        default:
-          return ValidationResult(isValid: true, message: 'Data validation passed');
-      }
-    } catch (e) {
-      return ValidationResult(
-        isValid: false,
-        message: 'Validation error: $e',
-        issues: ['Validation exception: $e'],
-        issueCount: 1,
-      );
-    }
-  }
-
-  /// 🔒 DATA VALIDATION: Validate operation data before sending to backend
-  Future<ValidationResult> _validateOperationData(QueuedOperation operation) async {
-    try {
-      final data = operation.data;
-      
-      // Validate based on operation type
-      switch (operation.action) {
-        case 'save_sale':
-          return DataValidationService.instance.validateSingleSale(data);
-        case 'save_customer':
-          // Validate customer data
-          if (data['phone'] != null) {
-            final phone = data['phone'].toString();
-            if (phone.isNotEmpty && !RegExp(r'^[0-9]{10}$').hasMatch(phone)) {
-              return ValidationResult(
-                isValid: false,
-                message: 'Invalid phone number format',
-                issues: ['Invalid phone: $phone'],
-                issueCount: 1,
-              );
-            }
-          }
-          return ValidationResult(isValid: true, message: 'Customer data valid');
-        case 'update_inventory':
+        case 'update_stock':
           // Validate inventory data
           if (data['current_stock'] != null) {
             final stock = int.tryParse(data['current_stock'].toString());
