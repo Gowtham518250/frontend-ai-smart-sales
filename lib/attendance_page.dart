@@ -524,6 +524,10 @@ class _AttendancePageState extends State<AttendancePage>
       // worker_id/employee_id as a raw JSON int, so a bare `==` here always
       // failed and this tile never detected "already checked in".
       final recordWorkerId = r['worker_id'] ?? r['employee_id'];
+      
+      // Explicit null check to prevent null pointer exception
+      if (recordWorkerId == null) return false;
+      
       final recDate = (r['attendance_date'] ?? '').toString().split('T').first.trim();
       return recordWorkerId.toString() == worker.id.toString() && recDate == today;
     }).firstOrNull;

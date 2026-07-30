@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher_string.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'api_client.dart';
 import 'smart_reorder_ai.dart';
 import 'local_storage_service.dart';
@@ -218,20 +220,65 @@ class _FlashSaleTabState extends State<_FlashSaleTab> with SingleTickerProviderS
 
   void _loadActiveFlashSale() async {
     try {
-      final res = await ApiClient.getJson('/api/flash-sale/active');
-      if (res.statusCode == 200 && mounted) {
-        final data = jsonDecode(res.body);
-        setState(() {
-          _activeFlashSale = {
+      // Load from local storage first for immediate response (offline-first)
+      final prefs = await SharedPreferences.getInstance();
+      final localFlashSaleData = prefs.getString('active_flash_sale');
+      
+      if (localFlashSaleData != null && localFlashSaleData.isNotEmpty) {
+        try {
+          final data = jsonDecode(localFlashSaleData);
+          final expiry = DateTime.parse(data['expiry']);
+          
+          // Check if flash sale is still valid
+          if (DateTime.now().isBefore(expiry) && mounted) {
+            setState(() {
+              _activeFlashSale = data;
+            });
+            if (kDebugMode) debugPrint('✅ Active flash sale loaded from local storage');
+          } else {
+            // Expired, clear local data
+            await prefs.remove('active_flash_sale');
+            if (kDebugMode) debugPrint('⏰ Flash sale expired, cleared local data');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Error parsing local flash sale data: $e');
+        }
+      }
+      
+      // Then sync with backend for latest data
+      try {
+        final res = await ApiClient.getJson('/api/flash-sale/active');
+        if (res.statusCode == 200 && mounted) {
+          final data = jsonDecode(res.body);
+          final flashSaleData = {
             'category': data['category'],
             'discount': data['discount_pct']?.toString(),
             'hours': data['hours_duration']?.toString(),
             'expiry': data['end_time'],
           };
-        });
+          
+          // Check if backend flash sale is still valid
+          final expiry = DateTime.parse(data['end_time']);
+          if (DateTime.now().isBefore(expiry)) {
+            setState(() {
+              _activeFlashSale = flashSaleData;
+            });
+            // Save to local storage for offline use
+            await prefs.setString('active_flash_sale', json.encode(flashSaleData));
+            if (kDebugMode) debugPrint('✅ Active flash sale synced from backend');
+          } else {
+            // Backend flash sale expired, clear local data
+            await prefs.remove('active_flash_sale');
+            setState(() => _activeFlashSale = null);
+            if (kDebugMode) debugPrint('⏰ Backend flash sale expired');
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Backend flash sale sync failed, using local data: $e');
+        // Keep using local data if backend sync fails
       }
     } catch (e) {
-      // 404 is expected if there is no active sale
+      if (kDebugMode) debugPrint('❌ Flash sale load failed: $e');
     }
   }
 
@@ -484,16 +531,44 @@ class _ChurnRiskTabState extends State<_ChurnRiskTab> {
   void _loadChurn() async {
     setState(() { _isLoading = true; _hasFailed = false; });
     try {
-      final res = await ApiClient.getJson('/api/analytics/churn-risk?days=$_selectedDays');
-      if (mounted) {
-        final data = jsonDecode(res.body);
-        setState(() {
-          _customers = data['customers'] ?? [];
-          _isLoading = false;
-        });
+      // Load from local storage first for immediate response (offline-first)
+      final prefs = await SharedPreferences.getInstance();
+      final localChurnData = prefs.getString('churn_risk_data');
+      
+      if (localChurnData != null && localChurnData.isNotEmpty) {
+        try {
+          final data = jsonDecode(localChurnData);
+          if (mounted) {
+            setState(() {
+              _customers = data['customers'] ?? [];
+              _isLoading = false;
+            });
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Error parsing local churn data: $e');
+        }
+      }
+      
+      // Then sync with backend for latest data
+      try {
+        final res = await ApiClient.getJson('/api/analytics/churn-risk?days=$_selectedDays');
+        if (mounted && res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          setState(() {
+            _customers = data['customers'] ?? [];
+            _isLoading = false;
+          });
+          // Save to local storage for offline use
+          await prefs.setString('churn_risk_data', json.encode(data));
+          if (kDebugMode) debugPrint('✅ Churn risk data synced from backend');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Backend churn sync failed, using local data: $e');
+        // Keep using local data if backend sync fails
       }
     } catch (e) {
       if (mounted) setState(() { _isLoading = false; _hasFailed = true; });
+      if (kDebugMode) debugPrint('❌ Churn data load failed: $e');
     }
   }
 

@@ -866,7 +866,7 @@ class _ShopProfilePageState extends State<ShopProfilePage> {
                               final prefs = await SharedPreferences.getInstance();
                               final shopId = prefs.getString('shop_id') ?? prefs.getInt('user_id')?.toString() ?? '1';
                               final shopName = prefs.getString('shop_name') ?? shopNameController.text.trim();
-                              final shopUrl = 'https://retail-mind-vkbp.onrender.com/shop/$shopId';
+                              final shopUrl = 'https://retail-mind-web.onrender.com/shop/$shopId';
                               await Share.share('🛍️ Browse products from $shopName\n$shopUrl', subject: 'Visit $shopName');
                             } catch (e) {
                               if (kDebugMode) debugPrint('Share failed: $e');
@@ -1769,7 +1769,3 @@ class _StyledField extends StatelessWidget {
     );
   }
 }
-
-
-
-

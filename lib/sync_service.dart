@@ -73,12 +73,21 @@ class SyncService {
   /// Start or restart the pulse timer
   static void _startPulseTimer() {
     _pulseTimer?.cancel();
-    _pulseTimer = Timer.periodic(const Duration(seconds: 60), (timer) async {
+    // 🚨 DATA-LOSS-PREVENTION FIX: shortened 60s -> 20s AND now also drives the
+    // pending sync queue (sales, purchase orders, stock updates, etc). Previously
+    // this timer only re-downloaded data; the queue itself only re-ran on a
+    // connectivity-change EVENT, which frequently never fires on flaky mobile/5G
+    // networks (tower handoffs, weak-signal "still connected" states). That gap is
+    // exactly why a sale could sit unsynced for a long time despite having signal.
+    _pulseTimer = Timer.periodic(const Duration(seconds: 20), (timer) async {
       if (!_initialized) return;
-      
+
       try {
         final connection = await Connectivity().checkConnectivity();
         if (connection != ConnectivityResult.none) {
+          // Always try to flush the pending queue first — this is the data that
+          // must not be lost (sales, purchase orders, stock decrements, etc).
+          await processQueueSafe();
           await downloadUserDataSafe();
           _refreshNotifier.add(null); // Notify UI to rebuild
         }
@@ -551,8 +560,10 @@ class SyncService {
         if (retries > 0 && lastAttemptStr != null) {
           final lastAttempt = DateTime.tryParse(lastAttemptStr);
           if (lastAttempt != null) {
-            // 2^retries minutes backoff (max 2 hours)
-            final backoffMinutes = (1 << (retries > 7 ? 7 : retries));
+            // 2^retries minutes backoff, capped at ~10 minutes (was capped at 2 hours,
+            // which is why an unsynced sale on a flaky network could appear "stuck" for
+            // a long time — the pulse timer fix above now also re-triggers this sooner).
+            final backoffMinutes = (1 << (retries > 3 ? 3 : retries));
             if (DateTime.now().difference(lastAttempt).inMinutes < backoffMinutes) {
               continue; // Wait for backoff period
             }
@@ -603,6 +614,14 @@ class SyncService {
               success = await _updateLocalProductItem(data);
               break;
 
+            case 'create_purchase_order':
+              success = await _createPurchaseOrderItem(data);
+              break;
+
+            case 'update_purchase_order_status':
+              success = await _updatePurchaseOrderStatusItem(data);
+              break;
+
             default:
               if (kDebugMode) debugPrint('⚠️ Unknown action: $action');
               success = false;
@@ -618,6 +637,9 @@ class SyncService {
                 await SaleService.markSaleAsSynced(saleId);
                 SyncService.triggerDashboardRefresh();
               }
+            }
+            if (action == 'create_purchase_order' || action == 'update_purchase_order_status') {
+              SyncService.triggerDashboardRefresh();
             }
           } else {
             // Increment retry count
@@ -873,6 +895,47 @@ class SyncService {
     }
   }
 
+  /// Create a purchase order on the backend (queued for offline safety)
+  static Future<bool> _createPurchaseOrderItem(Map<String, dynamic> data) async {
+    try {
+      final token = await SecureTokenStorage.getToken() ?? '';
+      if (token.isEmpty) return false;
+
+      final res = await ApiClient.postJson(
+        '/purchase-orders/',
+        data,
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Error creating purchase order: $e');
+      return false;
+    }
+  }
+
+  /// Update a purchase order's status (mark-delivered / cancel) on the backend
+  static Future<bool> _updatePurchaseOrderStatusItem(Map<String, dynamic> data) async {
+    try {
+      final token = await SecureTokenStorage.getToken() ?? '';
+      if (token.isEmpty) return false;
+
+      final poId = data['po_id'];
+      final action = data['po_action']; // 'mark-delivered' or 'cancel'
+
+      final res = await ApiClient.postJson(
+        '/purchase-orders/$poId/$action',
+        {},
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Error updating purchase order status: $e');
+      return false;
+    }
+  }
+
   /// Fetch authoritative server time to prevent device time manipulation fraud
   /// This ensures date-based records can't be corrupted by changing device clock
   static Future<DateTime> getAuthoritativeTime() async {
@@ -1050,5 +1113,3 @@ class SyncService {
   }
 
 }
-
-

@@ -110,7 +110,7 @@ class _DataExportWidgetState extends State<DataExportWidget> {
       });
 
       String rangeLabel = _selectedTimeRange == ExportTimeRange.custom && _customStartDate != null && _customEndDate != null
-          ? '${_customStartDate!.toString().split(' ')[0]}_to_${_customEndDate!.toString().split(' ')[0]}'
+          ? '${_customStartDate.toString().split(' ')[0]}_to_${_customEndDate.toString().split(' ')[0]}'
           : _selectedTimeRange.name;
 
       String? filePath;
@@ -138,7 +138,7 @@ class _DataExportWidgetState extends State<DataExportWidget> {
       } else {
         setState(() => _statusMessage = 'Generating PDF...');
         String dateRangeText = _selectedTimeRange == ExportTimeRange.custom && _customStartDate != null && _customEndDate != null
-            ? '${_customStartDate!.toString().split(' ')[0]} to ${_customEndDate!.toString().split(' ')[0]}'
+            ? '${_customStartDate.toString().split(' ')[0]} to ${_customEndDate.toString().split(' ')[0]}'
             : '${_selectedTimeRange.name.replaceAll('_', ' ').toUpperCase()} (${filteredSales.length} transactions)';
 
         filePath = await ExportService.savePDF(
@@ -351,11 +351,11 @@ class _DataExportWidgetState extends State<DataExportWidget> {
               ),
             ],
           ),
-          if (_selectedTimeRange == ExportTimeRange.custom && _customStartDate != null)
+          if (_selectedTimeRange == ExportTimeRange.custom && _customStartDate != null && _customEndDate != null)
             Padding(
               padding: const EdgeInsets.only(top: 8.0),
               child: Text(
-                'Selected: ${_customStartDate!.toString().split(' ')[0]} to ${_customEndDate!.toString().split(' ')[0]}',
+                'Selected: ${_customStartDate.toString().split(' ')[0]} to ${_customEndDate.toString().split(' ')[0]}',
                 style: const TextStyle(fontSize: 12, color: Colors.blue, fontWeight: FontWeight.bold),
               ),
             ),

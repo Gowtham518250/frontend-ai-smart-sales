@@ -8,6 +8,8 @@ import 'data_integrity_service.dart';
 import 'data_corruption_service.dart';
 import 'audit_logging_service.dart';
 import 'crash_recovery_service.dart';
+import 'api_client.dart';
+import 'sync_queue_manager.dart';
 
 /// Adaptive Service Manager
 /// Manages background services based on device capabilities
@@ -256,24 +258,30 @@ class AdaptiveServiceManager {
   Future<void> stopAllServices() async {
     try {
       if (kDebugMode) debugPrint('🛑 Stopping all services');
-      
+
       // Stop timers
       _performanceTimer?.cancel();
       _syncTimer?.cancel();
       _backupTimer?.cancel();
       _integrityTimer?.cancel();
       _corruptionTimer?.cancel();
-      
+
       // Stop services
       BackgroundSyncWorker.instance.stop();
       AutomaticBackupService.instance.stop();
       PerformanceMonitorService.instance.stopMonitoring();
-      
+
+      // Dispose ApiClient to close StreamController
+      await ApiClient.dispose();
+
+      // Dispose SyncQueueManager to clean up resources
+      await SyncQueueManager.dispose();
+
       // Mark clean shutdown
       await CrashRecoveryService.instance.markCleanShutdown();
-      
+
       if (kDebugMode) debugPrint('✅ All services stopped');
-      
+
     } catch (e) {
       if (kDebugMode) debugPrint('❌ Error stopping services: $e');
     }

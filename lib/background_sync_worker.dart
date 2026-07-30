@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'api_client.dart';
 import 'operation_queue_service.dart';
 import 'session_management.dart';
 import 'uuid_service.dart';
+import 'data_validation_service.dart';
+import 'local_storage_service.dart';
 
 /// Background Sync Worker
 /// Processes operations from the persistent queue in the background
@@ -142,6 +145,106 @@ class BackgroundSyncWorker {
     }
   }
   
+  /// 🔒 DATA VALIDATION: Validate operation data before sending to backend
+  Future<ValidationResult> _validateOperationData(QueuedOperation operation) async {
+    try {
+      final data = operation.data;
+      
+      // Validate based on operation type
+      switch (operation.action) {
+        case 'save_sale':
+          return DataValidationService.instance.validateSingleSale(data);
+        case 'save_customer':
+          // Validate customer data
+          if (data['phone'] != null) {
+            final phone = data['phone'].toString();
+            if (phone.isNotEmpty && !RegExp(r'^[0-9]{10}$').hasMatch(phone)) {
+              return ValidationResult(
+                isValid: false,
+                message: 'Invalid phone number format',
+                issues: ['Invalid phone: $phone'],
+                issueCount: 1,
+              );
+            }
+          }
+          return ValidationResult(isValid: true, message: 'Customer data valid');
+        case 'update_inventory':
+          // Validate inventory data
+          if (data['current_stock'] != null) {
+            final stock = int.tryParse(data['current_stock'].toString());
+            if (stock == null || stock < 0) {
+              return ValidationResult(
+                isValid: false,
+                message: 'Invalid stock value',
+                issues: ['Invalid stock: ${data['current_stock']}'],
+                issueCount: 1,
+              );
+            }
+          }
+          return ValidationResult(isValid: true, message: 'Inventory data valid');
+        default:
+          return ValidationResult(isValid: true, message: 'Data validation passed');
+      }
+    } catch (e) {
+      return ValidationResult(
+        isValid: false,
+        message: 'Validation error: $e',
+        issues: ['Validation exception: $e'],
+        issueCount: 1,
+      );
+    }
+  }
+
+  /// 🔒 DATA VALIDATION: Validate operation data before sending to backend
+  Future<ValidationResult> _validateOperationData(QueuedOperation operation) async {
+    try {
+      final data = operation.data;
+      
+      // Validate based on operation type
+      switch (operation.action) {
+        case 'save_sale':
+          return DataValidationService.instance.validateSingleSale(data);
+        case 'save_customer':
+          // Validate customer data
+          if (data['phone'] != null) {
+            final phone = data['phone'].toString();
+            if (phone.isNotEmpty && !RegExp(r'^[0-9]{10}$').hasMatch(phone)) {
+              return ValidationResult(
+                isValid: false,
+                message: 'Invalid phone number format',
+                issues: ['Invalid phone: $phone'],
+                issueCount: 1,
+              );
+            }
+          }
+          return ValidationResult(isValid: true, message: 'Customer data valid');
+        case 'update_inventory':
+          // Validate inventory data
+          if (data['current_stock'] != null) {
+            final stock = int.tryParse(data['current_stock'].toString());
+            if (stock == null || stock < 0) {
+              return ValidationResult(
+                isValid: false,
+                message: 'Invalid stock value',
+                issues: ['Invalid stock: ${data['current_stock']}'],
+                issueCount: 1,
+              );
+            }
+          }
+          return ValidationResult(isValid: true, message: 'Inventory data valid');
+        default:
+          return ValidationResult(isValid: true, message: 'Data validation passed');
+      }
+    } catch (e) {
+      return ValidationResult(
+        isValid: false,
+        message: 'Validation error: $e',
+        issues: ['Validation exception: $e'],
+        issueCount: 1,
+      );
+    }
+  }
+
   /// Process operations from the queue
   Future<void> _processOperations({OperationPriority? priorityOnly}) async {
     int processedCount = 0;
@@ -164,6 +267,18 @@ class BackgroundSyncWorker {
       await OperationQueueService.instance.markInProgress(operation.operationId);
       
       try {
+        // 🔒 DATA VALIDATION: Validate operation data before sending to backend
+        final validation = await _validateOperationData(operation);
+        if (!validation.isValid) {
+          if (kDebugMode) debugPrint('⚠️ Operation data validation failed: ${validation.message}');
+          await OperationQueueService.instance.markFailed(
+            operation.operationId,
+            error: 'Data validation failed: ${validation.message}'
+          );
+          errorCount++;
+          continue;
+        }
+        
         // Send to backend
         final success = await _sendOperationToBackend(operation);
         

@@ -47,6 +47,8 @@ import 'offline_payment_queue.dart';
 import 'package:vibration/vibration.dart';
 import 'session_management.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'data_validation_service.dart';
+import 'stock_validation_service.dart';
 
 
 
@@ -79,8 +81,63 @@ class _SalesEntryPageState extends State<SalesEntryPage>
   int? _lastAddedRowIndex = -1;
   bool _isVoiceAssistantOpen = false;
   double _schemeDiscount = 0.0;
+  double _flashSaleDiscount = 0.0;
   String _activeSchemeName = '';
   String _paymentAnnounceLang = 'en-IN'; // 🎙️ Payment announcement language
+  
+  // 🔧 PERFORMANCE OPTIMIZATION: Batch state updates to reduce setState calls
+  final List<VoidCallback> _pendingStateUpdates = [];
+  bool _isUpdatingState = false;
+  
+  /// Batch multiple state updates into a single setState
+  void _batchStateUpdate(VoidCallback update) {
+    _pendingStateUpdates.add(update);
+    
+    if (!_isUpdatingState) {
+      _isUpdatingState = true;
+      // Delay slightly to collect more updates
+      Future.microtask(() {
+        setState(() {
+          for (final update in _pendingStateUpdates) {
+            update();
+          }
+          _pendingStateUpdates.clear();
+        });
+        _isUpdatingState = false;
+      });
+    }
+  }
+  
+  /// Update multiple state values in a single setState
+  void _updateMultipleStateValues({
+    String? message,
+    bool? isLoading,
+    List<Map<String, TextEditingController>>? entries,
+    double? totalAmount,
+    double? totalSubtotal,
+    double? totalCgst,
+    double? totalSgst,
+    bool? withTax,
+    bool? isVoiceAssistantOpen,
+    double? schemeDiscount,
+    double? flashSaleDiscount,
+    String? activeSchemeName,
+  }) {
+    setState(() {
+      if (message != null) this.message = message;
+      if (isLoading != null) this.isLoading = isLoading;
+      if (entries != null) this.entries = entries;
+      if (totalAmount != null) this.totalAmount = totalAmount;
+      if (totalSubtotal != null) this.totalSubtotal = totalSubtotal;
+      if (totalCgst != null) this.totalCgst = totalCgst;
+      if (totalSgst != null) this.totalSgst = totalSgst;
+      if (withTax != null) _withTax = withTax;
+      if (isVoiceAssistantOpen != null) _isVoiceAssistantOpen = isVoiceAssistantOpen;
+      if (schemeDiscount != null) _schemeDiscount = schemeDiscount;
+      if (flashSaleDiscount != null) _flashSaleDiscount = flashSaleDiscount;
+      if (activeSchemeName != null) _activeSchemeName = activeSchemeName;
+    });
+  }
 
   // Haptic Feedback Helpers
   Future<void> _hapticLight() async {
@@ -121,16 +178,40 @@ class _SalesEntryPageState extends State<SalesEntryPage>
         final double qty = ((item['qty'] ?? item['quantity']) as num?)?.toDouble() ?? 1.0;
         final double price = (item['price'] as num?)?.toDouble() ?? 0.0;
         
-        // Find existing row with this name or empty row
-        int targetIdx = entries.indexWhere((e) => e['item']!.text.isEmpty || e['item']!.text.toUpperCase() == name.toUpperCase());
+        // Null safety check: ensure entries list and controllers exist
+        if (entries.isEmpty) {
+          addEntry();
+        }
+        
+        // Find existing row with this name or empty row with null safety
+        int targetIdx = entries.indexWhere((e) {
+          try {
+            return e['item']?.text.isEmpty || 
+                   (e['item']?.text.isNotEmpty && e['item']!.text.toUpperCase() == name.toUpperCase());
+          } catch (e) {
+            return false; // Skip invalid entries
+          }
+        });
+        
         if (targetIdx == -1) {
           addEntry();
           targetIdx = entries.length - 1;
         }
         
-        entries[targetIdx]['item']!.text = name;
-        entries[targetIdx]['qty']!.text = qty.toString();
-        entries[targetIdx]['price']!.text = price.toString();
+        // Null safety check for controllers
+        try {
+          if (entries[targetIdx]['item'] != null) {
+            entries[targetIdx]['item']!.text = name;
+          }
+          if (entries[targetIdx]['qty'] != null) {
+            entries[targetIdx]['qty']!.text = qty.toString();
+          }
+          if (entries[targetIdx]['price'] != null) {
+            entries[targetIdx]['price']!.text = price.toString();
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Error setting voice order values: $e');
+        }
       }
       _isVoiceAssistantOpen = false;
       calculateTotal();
@@ -146,8 +227,8 @@ class _SalesEntryPageState extends State<SalesEntryPage>
        return;
     }
 
-    final billText = "Hello ${customerNameController.text.trim()},\n\nYour bill from ${_shopNameForDynamicQr} is ₹${totalAmount.toStringAsFixed(2)}.\n\nItems:\n" + 
-      entries.where((e) => e['item']!.text.isNotEmpty).map((e) => "- ${e['item']!.text}: ${e['qty']!.text} x ${e['price']!.text}").join("\n") + 
+    final billText = "Hello ${customerNameController.text.trim()},\n\nYour bill from ${_shopNameForDynamicQr} is ₹${totalAmount.toStringAsFixed(2)}.\n\nItems:\n" +
+      entries.where((e) => e['item']?.text.isNotEmpty ?? false).map((e) => "- ${e['item']?.text ?? ''}: ${e['qty']?.text ?? '1'} x ${e['price']?.text ?? '0'}").join("\n") +
       "\n\nTotal: ₹${totalAmount.toStringAsFixed(2)}\n\nThank you for shopping!";
 
     final url = "https://wa.me/91$customerPhone?text=${Uri.encodeComponent(billText)}";
@@ -385,18 +466,19 @@ class _SalesEntryPageState extends State<SalesEntryPage>
                 {'code': 'ta-IN', 'name': 'Tamil / à®¤à®®à®¿à®´à¯'},
                 {'code': 'mr-IN', 'name': 'Marathi / à¤®à¤°à¤¾à¤ à¥€'},
               ].map((l) => ActionChip(
-                label: Text(l['name']!, style: GoogleFonts.poppins(fontSize: 12, color: _speechInputLang == l['code'] ? Colors.white : Colors.black87)),
+                label: Text(l['name']?.toString() ?? '', style: GoogleFonts.poppins(fontSize: 12, color: _speechInputLang == l['code'] ? Colors.white : Colors.black87)),
                 backgroundColor: _speechInputLang == l['code'] ? Colors.indigo : Colors.grey[200],
                 side: _speechInputLang == l['code'] ? const BorderSide(color: Colors.indigo) : BorderSide.none,
                 onPressed: () async {
                   final prefs = await SharedPreferences.getInstance();
-                  await prefs.setString('speech_input_lang', l['code']!);
-                  setState(() => _speechInputLang = l['code']!);
+                  final code = l['code']?.toString() ?? 'en-IN';
+                  await prefs.setString('speech_input_lang', code);
+                  setState(() => _speechInputLang = code);
                   if (ctx.mounted && Navigator.canPop(ctx)) {
                     Navigator.pop(ctx);
                   }
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Voice input set to ${l['name']}')));
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Voice input set to ${l['name']?.toString() ?? ''}')));
                   }
                 },
               )).toList(),
@@ -454,11 +536,11 @@ class _SalesEntryPageState extends State<SalesEntryPage>
 
   Future<void> _printBluetooth() async {
     final itemsList = entries
-        .where((e) => e['item']!.text.isNotEmpty)
+        .where((e) => e['item']?.text.isNotEmpty ?? false)
         .map((e) => {
-              'product_name': e['item']!.text,
-              'qty': e['qty']!.text.isEmpty ? '1' : e['qty']!.text,
-              'price': e['price']!.text.isEmpty ? '0' : e['price']!.text,
+              'product_name': e['item']?.text ?? '',
+              'qty': e['qty']?.text.isEmpty ?? true ? '1' : e['qty']?.text ?? '1',
+              'price': e['price']?.text.isEmpty ?? true ? '0' : e['price']?.text ?? '0',
             })
         .toList();
 
@@ -822,7 +904,7 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     
     if (unitMatches.isNotEmpty) {
       final unitMatch = unitMatches.first;
-      unitFound = unitMatch.group(1)!;
+      unitFound = unitMatch.group(1) ?? '';
       
       // Look for number BEFORE or AFTER the unit (e.g., "1kg" or "kilo 1")
       final RegExp nearNumRegex = RegExp(r'(\d+(?:\.\d+)?)');
@@ -832,8 +914,9 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       
       final numInContext = nearNumRegex.firstMatch(textNearUnit);
       if (numInContext != null) {
-        qty = double.tryParse(numInContext.group(1)!) ?? 1.0;
-        command = command.replaceFirst(numInContext.group(1)!, ' ');
+        final numStr = numInContext.group(1) ?? '';
+        qty = double.tryParse(numStr) ?? 1.0;
+        command = command.replaceFirst(numStr, ' ');
         command = command.replaceFirst(unitFound, ' ');
       }
     }
@@ -851,8 +934,9 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     final List<RegExpMatch> pMatches = priceRegex.allMatches(command).toList();
     if (pMatches.isNotEmpty) {
        // Take the largest/last number as price
-       price = double.tryParse(pMatches.last.group(1)!) ?? 0.0;
-       command = command.replaceFirst(pMatches.last.group(1)!, ' ');
+       final priceStr = pMatches.last.group(1) ?? '';
+       price = double.tryParse(priceStr) ?? 0.0;
+       command = command.replaceFirst(priceStr, ' ');
     }
 
     // â”€â”€ 4. MULTI-LINGUAL NUMERIC FALLBACK (ek, do, etc) â”€â”€
@@ -980,12 +1064,12 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     if (!mounted) return;
     setState(() {
       _isVoiceProcessing = true;
-      
+
       // Cleanup: Logic to replace last empty row OR add new
       int targetIdx = -1;
       for (int i = 0; i < entries.length; i++) {
-        if (entries[i]['item']!.text.isEmpty && 
-            entries[i]['price']!.text.isEmpty) {
+        if (entries[i]['item']?.text.isEmpty ?? true &&
+            entries[i]['price']?.text.isEmpty ?? true) {
           targetIdx = i;
           break;
         }
@@ -996,15 +1080,19 @@ class _SalesEntryPageState extends State<SalesEntryPage>
         targetIdx = entries.length - 1;
       }
 
-      entries[targetIdx]['item']!.text = name;
-      entries[targetIdx]['qty']!.text = qty.toString();
-      if (providedPrice != null && providedPrice > 0) {
+      if (entries[targetIdx]['item'] != null) {
+        entries[targetIdx]['item']!.text = name;
+      }
+      if (entries[targetIdx]['qty'] != null) {
+        entries[targetIdx]['qty']!.text = qty.toString();
+      }
+      if (providedPrice != null && providedPrice > 0 && entries[targetIdx]['price'] != null) {
         entries[targetIdx]['price']!.text = providedPrice.toStringAsFixed(0);
       }
-      if (providedGst != null) {
+      if (providedGst != null && entries[targetIdx]['gst'] != null) {
         entries[targetIdx]['gst']!.text = providedGst.toStringAsFixed(0);
       }
-      if (providedBarcode != null) {
+      if (providedBarcode != null && entries[targetIdx]['barcode'] != null) {
         entries[targetIdx]['barcode']!.text = providedBarcode;
       }
       
@@ -1454,7 +1542,8 @@ class _SalesEntryPageState extends State<SalesEntryPage>
 
   Future<Map<String, dynamic>?> _lookupProductOnline(String barcode) async {
     if (_globalProductDataset.containsKey(barcode)) {
-      final p = _globalProductDataset[barcode]!;
+      final p = _globalProductDataset[barcode];
+      if (p == null) return null;
       return {
         'name': p['name'],
         'price': p['price'],
@@ -1586,7 +1675,7 @@ class _SalesEntryPageState extends State<SalesEntryPage>
         
         // 🧪 Deep Match: Check if barcode is stored inside the item name (Legacy cleanup)
         if (storedBarcode.isEmpty) {
-          String itemName = e['item']!.text.trim();
+          String itemName = e['item']?.text?.trim() ?? '';
           if (itemName.endsWith('_$scanCode') || itemName == scanCode) {
             storedBarcode = scanCode;
           }
@@ -1611,7 +1700,7 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       if (pName.isNotEmpty && !['product', 'retail product', 'unknown'].contains(pName)) {
         for (int i = 0; i < entries.length; i++) {
           final e = entries[i];
-          String entryName = e['item']!.text.trim().toLowerCase();
+          String entryName = e['item']?.text?.trim().toLowerCase() ?? '';
           // Legacy cleanup for existing entry name
           if (entryName.contains('_')) {
              final parts = entryName.split('_');
@@ -1633,7 +1722,7 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     if (target == null) {
       for (int i = 0; i < entries.length; i++) {
         final e = entries[i];
-        if (e['item']!.text.trim().isEmpty && (e['barcode']?.text.trim().isEmpty ?? true)) {
+        if (e['item']?.text.trim().isEmpty ?? true && (e['barcode']?.text.trim().isEmpty ?? true)) {
           target = e;
           targetIndex = i;
           break;
@@ -1664,15 +1753,17 @@ class _SalesEntryPageState extends State<SalesEntryPage>
         }
       }
       
-      if (target!['item']!.text.isEmpty) {
+      if (target != null && target['item'] != null && target['item']!.text.isEmpty) {
         target['item']!.text = cleanName;
-        target['qty']!.text = '1';
-      } else {
+        if (target['qty'] != null) {
+          target['qty']!.text = '1';
+        }
+      } else if (target != null && target['qty'] != null) {
         int currentQty = int.tryParse(target['qty']!.text) ?? 1;
         target['qty']!.text = (currentQty + 1).toString();
       }
 
-      if (scanCode.isNotEmpty) {
+      if (scanCode.isNotEmpty && target != null) {
         if (target['barcode'] == null) {
           target['barcode'] = TextEditingController(text: scanCode);
         } else {
@@ -1681,18 +1772,18 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       }
 
       double priceValue = double.tryParse(product['price']?.toString() ?? '0') ?? 0;
-      if (priceValue > 0) {
+      if (priceValue > 0 && target != null && target['price'] != null) {
         target['price']!.text = priceValue.toString();
-      } else {
+      } else if (target != null && target['price'] != null) {
         // If price is 0 (new product/new user), we clear it or set to empty
         // so the 'Enter Price' validation is triggered and user is forced to enter it.
         target['price']!.text = '';
       }
 
       String gstValue = (product['gst'] ?? _getDefaultGst(cleanName)).toString();
-      if (target['gst'] == null) {
+      if (target != null && target['gst'] == null) {
         target['gst'] = TextEditingController(text: gstValue);
-      } else {
+      } else if (target != null && target['gst'] != null) {
         target['gst']!.text = gstValue;
       }
 
@@ -1721,13 +1812,17 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       controller.dispose();
     }
     customerPhoneController.dispose();
+    
+    // Safe disposal with null checks
     for (var entry in entries) {
       entry['item']?.dispose();
       entry['qty']?.dispose();
       entry['price']?.dispose();
       entry['gst']?.dispose();
       entry['barcode']?.dispose();
+      entry['discount']?.dispose(); // Added missing discount controller disposal
     }
+    
     _dueDateController.dispose();
     super.dispose();
   }
@@ -1755,6 +1850,117 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Session check error: $e');
     }
+  }
+  
+  // 🔒 DATA VALIDATION: Validate sale data before saving
+  Future<bool> _validateSaleData() async {
+    if (entries.isEmpty) {
+      if (mounted) setState(() => message = 'Please add at least one item');
+      return false;
+    }
+    
+    // Validate each entry
+    for (int i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      final itemName = entry['item']?.text?.trim();
+      final qtyText = entry['qty']?.text?.trim();
+      final priceText = entry['price']?.text?.trim();
+      
+      // Check required fields
+      if (itemName == null || itemName.isEmpty) {
+        if (mounted) setState(() => message = 'Item ${i + 1} is missing name');
+        return false;
+      }
+      
+      if (qtyText == null || qtyText.isEmpty) {
+        if (mounted) setState(() => message = 'Item ${i + 1} is missing quantity');
+        return false;
+      }
+      
+      if (priceText == null || priceText.isEmpty) {
+        if (mounted) setState(() => message = 'Item ${i + 1} is missing price');
+        return false;
+      }
+      
+      // Validate numeric values
+      final quantity = int.tryParse(qtyText);
+      if (quantity == null || quantity <= 0) {
+        if (mounted) setState(() => message = 'Item ${i + 1} has invalid quantity: $qtyText');
+        return false;
+      }
+      
+      final price = double.tryParse(priceText);
+      if (price == null || price < 0) {
+        if (mounted) setState(() => message = 'Item ${i + 1} has invalid price: $priceText');
+        return false;
+      }
+      
+      // Validate GST if enabled
+      if (_withTax) {
+        final gstText = entry['gst']?.text?.trim();
+        if (gstText != null && gstText.isNotEmpty) {
+          final gst = double.tryParse(gstText);
+          if (gst == null || gst < 0 || gst > 30) {
+            if (mounted) setState(() => message = 'Item ${i + 1} has invalid GST rate: $gstText');
+            return false;
+          }
+        }
+      }
+    }
+    
+    // Validate customer if provided
+    final customerPhone = customerPhoneController.text.trim();
+    if (customerPhone.isNotEmpty) {
+      if (!RegExp(r'^[0-9]{10}$').hasMatch(customerPhone)) {
+        if (mounted) setState(() => message = 'Invalid phone number format (10 digits required)');
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  // 🔒 STOCK VALIDATION: Check stock availability before sale
+  Future<bool> _validateStockAvailability() async {
+    for (int i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      final itemName = entry['item']?.text?.trim();
+      final qtyText = entry['qty']?.text?.trim();
+      
+      if (itemName == null || itemName.isEmpty || qtyText == null || qtyText.isEmpty) {
+        continue;
+      }
+      
+      final quantity = int.tryParse(qtyText) ?? 0;
+      if (quantity <= 0) continue;
+      
+      try {
+        final validation = await StockValidationService.instance.validateItemStock(
+          itemName: itemName,
+          requestedQuantity: quantity,
+        );
+        
+        if (!validation.isValid) {
+          if (mounted) {
+            setState(() => message = validation.message);
+          }
+          return false;
+        }
+        
+        if (validation.requiresManualConfirmation) {
+          if (kDebugMode) debugPrint('⚠️ Stock validation requires manual confirmation: ${validation.message}');
+          // Continue but log warning
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Stock validation failed for $itemName: $e');
+        // Continue with validation failure warning
+        if (mounted) {
+          setState(() => message = 'Could not validate stock for $itemName. Proceed with caution.');
+        }
+      }
+    }
+    
+    return true;
   }
 
 
@@ -2187,10 +2393,10 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     double gstTotal = 0.0;
 
     for (var entry in entries) {
-      final String qtyText = entry['qty']!.text.trim();
-      final String priceText = entry['price']!.text.trim();
+      final String qtyText = entry['qty']?.text.trim() ?? '1';
+      final String priceText = entry['price']?.text.trim() ?? '0';
       final String discText = entry['discount']?.text.trim() ?? '0';
-      
+
       final double qty = qtyText.isEmpty ? 1.0 : (double.tryParse(qtyText) ?? 0.0);
       final double price = double.tryParse(priceText) ?? 0.0;
       final double discount = double.tryParse(discText) ?? 0.0;
@@ -2223,15 +2429,44 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       final schemeResult =
           SchemeEngine.applyBestScheme(schemeItems, subTotal);
       
+      // Apply flash sale discount if active
+      double flashSaleDiscount = 0.0;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final flashSaleData = prefs.getString('active_flash_sale');
+        
+        if (flashSaleData != null && flashSaleData.isNotEmpty) {
+          final flashSale = jsonDecode(flashSaleData);
+          final expiry = DateTime.parse(flashSale['expiry']);
+          
+          // Check if flash sale is still valid
+          if (DateTime.now().isBefore(expiry)) {
+            final discountPercent = double.tryParse(flashSale['discount']?.toString() ?? '0') ?? 0;
+            if (discountPercent > 0) {
+              flashSaleDiscount = subTotal * (discountPercent / 100);
+              if (kDebugMode) debugPrint('✅ Flash sale discount applied: ${discountPercent}% = ₹$flashSaleDiscount');
+            }
+          } else {
+            // Flash sale expired, clear local data
+            await prefs.remove('active_flash_sale');
+            if (kDebugMode) debugPrint('⏰ Flash sale expired during sale, cleared');
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Error applying flash sale discount: $e');
+      }
+      
       if (mounted) {
         setState(() {
           _schemeDiscount = (schemeResult['discount_amount'] as num?)?.toDouble() ?? 0;
+          _flashSaleDiscount = flashSaleDiscount;
           _activeSchemeName = schemeResult['scheme_name']?.toString() ?? '';
         });
       }
 
-      if (_schemeDiscount > 0) {
-        grand = double.parse(((subTotal + gstTotal - _schemeDiscount)).toStringAsFixed(2));
+      final totalDiscount = _schemeDiscount + _flashSaleDiscount;
+      if (totalDiscount > 0) {
+        grand = double.parse(((subTotal + gstTotal - totalDiscount)).toStringAsFixed(2));
       }
     } catch (e) {
       // Ignore scheme errors, proceed with normal total
@@ -2306,12 +2541,12 @@ class _SalesEntryPageState extends State<SalesEntryPage>
   // â”€â”€ REFACTORED MODULES FOR SUBMISSION â”€â”€
 
   bool _validateSaleInputs(double total) {
-    if (!_formKey.currentState!.validate()) {
+    if (!(_formKey.currentState?.validate() ?? false)) {
       if (mounted) setState(() => message = 'Please fix errors before confirming.');
       return false;
     }
 
-    final nonEmpty = entries.where((e) => e['item']!.text.trim().isNotEmpty).toList();
+    final nonEmpty = entries.where((e) => e['item']?.text.trim().isNotEmpty ?? false).toList();
     if (nonEmpty.isEmpty) {
       if (mounted) setState(() => message = 'Please add at least one item.');
       return false;
@@ -2332,11 +2567,11 @@ class _SalesEntryPageState extends State<SalesEntryPage>
   }
 
   List<Map<String, dynamic>> _getProcessedItems() {
-    return entries.where((e) => e['item']!.text.trim().isNotEmpty).map((e) {
+    return entries.where((e) => e['item']?.text.trim().isNotEmpty ?? false).map((e) {
       final barcode   = e['barcode']?.text.trim() ?? '';
-      final rawName   = e['item']!.text.trim();
-      final qty       = double.tryParse(e['qty']!.text.trim()) ?? 1.0;
-      final price     = double.tryParse(e['price']!.text.trim()) ?? 0.0;
+      final rawName   = e['item']?.text.trim() ?? '';
+      final qty       = double.tryParse(e['qty']?.text.trim() ?? '1') ?? 1.0;
+      final price     = double.tryParse(e['price']?.text.trim() ?? '0') ?? 0.0;
       final gstPct    = double.tryParse(e['gst']?.text.trim() ?? '0') ?? 0.0;
       
       final lineSub   = qty * price;
@@ -2827,6 +3062,18 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       return;
     }
 
+    // 🔒 DATA VALIDATION: Validate data before generating bill
+    final dataValid = await _validateSaleData();
+    if (!dataValid) {
+      return; // Validation failed, error message already set
+    }
+    
+    // 🔒 STOCK VALIDATION: Check stock availability
+    final stockAvailable = await _validateStockAvailability();
+    if (!stockAvailable) {
+      return; // Stock validation failed, error message already set
+    }
+
     final totals = calculateTotal() as Map<String, dynamic>;
     final double freshTotal = totals['total'] ?? 0.0;
 
@@ -2867,11 +3114,11 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     final String nextBillNo = 'BILL-${(currentLast + 1).toString().padLeft(4, '0')}';
 
     // snapshot entry data before dialog
-    final snapshot = entries.where((e) => e['item']!.text.trim().isNotEmpty).map((e) {
-      final rawName = e['item']!.text;
+    final snapshot = entries.where((e) => e['item']?.text.trim().isNotEmpty ?? false).map((e) {
+      final rawName = e['item']?.text ?? '';
       final barcode = e['barcode']?.text ?? '';
-      final qty = double.tryParse(e['qty']!.text) ?? 0.0;
-      final price = double.tryParse(e['price']!.text) ?? 0.0;
+      final qty = double.tryParse(e['qty']?.text ?? '0') ?? 0.0;
+      final price = double.tryParse(e['price']?.text ?? '0') ?? 0.0;
       final gstPercent = double.tryParse(e['gst']?.text ?? '18') ?? 18.0;
       
       String displayName = rawName;
@@ -2890,10 +3137,13 @@ class _SalesEntryPageState extends State<SalesEntryPage>
       
       // Attempt to look up the source dataset for this item for true analytics
       if (barcode.isNotEmpty && _globalProductDataset.containsKey(barcode)) {
-        final double srcPrice = double.tryParse(_globalProductDataset[barcode]!['price'].toString()) ?? price;
-        if (srcPrice > price) {
-          originalPrice = srcPrice;
-          discount = srcPrice - price;
+        final productData = _globalProductDataset[barcode];
+        if (productData != null) {
+          final double srcPrice = double.tryParse(productData['price'].toString()) ?? price;
+          if (srcPrice > price) {
+            originalPrice = srcPrice;
+            discount = srcPrice - price;
+          }
         }
       }
 
@@ -3420,8 +3670,8 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     double subtotalCalc = 0;
     double totalGstCalc = 0;
     for (var entry in entries) {
-      double qty = double.tryParse(entry['qty']!.text) ?? 0;
-      double price = double.tryParse(entry['price']!.text) ?? 0;
+      double qty = double.tryParse(entry['qty']?.text ?? '0') ?? 0;
+      double price = double.tryParse(entry['price']?.text ?? '0') ?? 0;
       double gstP = double.tryParse(entry['gst']?.text ?? '0') ?? 0;
       double sub = qty * price;
       subtotalCalc += sub;
@@ -3429,7 +3679,7 @@ class _SalesEntryPageState extends State<SalesEntryPage>
     }
     final double cgst = double.parse((totalGstCalc / 2).toStringAsFixed(2));
     final double sgst = double.parse((totalGstCalc / 2).toStringAsFixed(2));
-    final int itemCount = entries.where((e) => e['item']!.text.trim().isNotEmpty).length;
+    final int itemCount = entries.where((e) => e['item']?.text.trim().isNotEmpty ?? false).length;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -3553,9 +3803,12 @@ class _SalesEntryPageState extends State<SalesEntryPage>
               const SizedBox(width: 8),
               if (_withTax && totalGstCalc > 0)
                 _MetaChip(icon: Icons.percent_rounded, label: 'GST ₹${totalGstCalc.toStringAsFixed(0)}'),
-              if (_schemeDiscount > 0) ...[
+              if (_schemeDiscount > 0 || _flashSaleDiscount > 0) ...[
                 const SizedBox(width: 8),
-                _MetaChip(icon: Icons.local_offer_rounded, label: '-₹${_schemeDiscount.toStringAsFixed(0)}', color: const Color(0xFF10B981)),
+                if (_schemeDiscount > 0)
+                  _MetaChip(icon: Icons.local_offer_rounded, label: 'Scheme: -₹${_schemeDiscount.toStringAsFixed(0)}', color: const Color(0xFF10B981)),
+                if (_flashSaleDiscount > 0)
+                  _MetaChip(icon: Icons.flash_on_rounded, label: 'Flash: -₹${_flashSaleDiscount.toStringAsFixed(0)}', color: const Color(0xFFFF6B6B)),
               ],
             ],
           ),
@@ -4247,16 +4500,16 @@ class _SalesEntryPageState extends State<SalesEntryPage>
             const SizedBox(height: 14),
 
             // â”€â”€ Clear / New Sale â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            if (entries.isNotEmpty && entries.any((e) => e['item']!.text.isNotEmpty))
+            if (entries.isNotEmpty && entries.any((e) => e['item']?.text.isNotEmpty ?? false))
               SizedBox(
                 width: double.infinity,
                 child: TextButton.icon(
                   onPressed: () {
                     setState(() {
                       for (var entry in entries) {
-                        entry['item']!.clear();
-                        entry['qty']!.clear();
-                        entry['price']!.clear();
+                        entry['item']?.clear();
+                        entry['qty']?.clear();
+                        entry['price']?.clear();
                         entry['gst']?.text = '18';
                         entry['barcode']?.clear();
                       }

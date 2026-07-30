@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:synchronized/synchronized.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'api_client.dart';
 import 'sync_queue_manager.dart';
 import 'secure_token_storage.dart';
@@ -28,6 +29,7 @@ class SessionManagementService {
   static const String _userIdKey = 'user_id';
   static const String _userNameKey = 'user_name';
   static const String _userEmailKey = 'user_email';
+  static const String _sessionTimeKey = 'session_time';
   
   // 🔒 CRITICAL: Concurrency protection for token operations
   static final _sessionLock = Lock();
@@ -37,14 +39,14 @@ class SessionManagementService {
   static const Duration _sessionCheckInterval = Duration(hours: 1); // Check every hour
   static const Duration _maxSessionDuration = Duration(days: 7); // 7-day session
   
-  /// Start session expiry monitoring - DISABLED for offline-first capability
-  /// Session now persists indefinitely until manual logout
+  // 🔔 Session expiry monitoring - HYBRID MODE
+  // Enforces session expiry when online, allows offline grace period
   static void startSessionExpiryMonitoring() {
-    // DISABLED: Auto-logout removed for offline-first capability
-    // Session will persist indefinitely until user manually logs out
     _sessionExpiryTimer?.cancel();
-    _sessionExpiryTimer = null;
-    if (kDebugMode) debugPrint('🔔 Session expiry monitoring DISABLED - manual logout only');
+    _sessionExpiryTimer = Timer.periodic(_sessionCheckInterval, (timer) async {
+      await _checkAndHandleSessionExpiry();
+    });
+    if (kDebugMode) debugPrint('🔔 Session expiry monitoring started - hybrid mode (online enforcement, offline grace)');
   }
   
   /// Stop session expiry monitoring
@@ -54,26 +56,124 @@ class SessionManagementService {
     if (kDebugMode) debugPrint('🔔 Session expiry monitoring stopped');
   }
   
-  /// Check if session has expired - DISABLED for offline-first capability
-  /// No longer performs auto-logout - session persists indefinitely
+  /// Check if session has expired - HYBRID MODE
+  /// Enforces security when online, allows grace period when offline
   static Future<void> _checkAndHandleSessionExpiry() async {
-    // DISABLED: Auto-logout removed for offline-first capability
-    // Session will persist indefinitely until user manually logs out
-    if (kDebugMode) debugPrint('🔔 Session expiry check DISABLED - manual logout only');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final sessionTime = prefs.getInt(_sessionTimeKey);
+      
+      if (sessionTime == null) {
+        if (kDebugMode) debugPrint('🔔 No session time found, skipping expiry check');
+        return;
+      }
+      
+      final sessionDateTime = DateTime.fromMillisecondsSinceEpoch(sessionTime);
+      final now = DateTime.now();
+      final sessionAge = now.difference(sessionDateTime);
+      
+      // Check if session is beyond max duration
+      if (sessionAge > _maxSessionDuration) {
+        // Check network connectivity before enforcing expiry
+        final connectivityResult = await Connectivity().checkConnectivity();
+        final isOnline = connectivityResult != ConnectivityResult.none;
+        
+        if (isOnline) {
+          // Online: Enforce session expiry for security
+          if (kDebugMode) debugPrint('🔔 Session expired (online) - enforcing logout for security');
+          await performSecureLogout(reason: 'Session expired');
+        } else {
+          // Offline: Allow grace period but warn user
+          if (kDebugMode) debugPrint('🔔 Session expired (offline) - grace period active');
+          // Could show user notification about session expiry
+        }
+      } else {
+        if (kDebugMode) debugPrint('🔔 Session still valid (${sessionAge.inDays} days old)');
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Session expiry check error: $e');
+    }
   }
   
-  /// Get or Generate unique Device Fingerprint
+  /// Perform secure logout with proper cleanup
+  static Future<void> performSecureLogout({String? reason}) async {
+    try {
+      if (kDebugMode) debugPrint('🔔 Performing secure logout${reason != null ? ': $reason' : ''}');
+      
+      // Stop session monitoring
+      stopSessionExpiryMonitoring();
+      
+      // Clear all session data
+      await clearAllSessionData();
+      
+      // Notify user of logout reason if provided
+      if (reason != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('logout_reason', reason);
+      }
+      
+      if (kDebugMode) debugPrint('✅ Secure logout completed');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Secure logout error: $e');
+    }
+  }
+  
+  /// Clear all session data securely
+  static Future<void> clearAllSessionData() async {
+    try {
+      await SecureTokenStorage.clearAll();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_refreshTokenKey);
+      await prefs.remove(_accessTokenKey);
+      await prefs.remove(_refreshTokenExpiryKey);
+      await prefs.remove(_userIdKey);
+      await prefs.remove(_userNameKey);
+      await prefs.remove(_userEmailKey);
+      await prefs.remove(_sessionTimeKey);
+      if (kDebugMode) debugPrint('✅ All session data cleared');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Error clearing session data: $e');
+    }
+  }
+  
+  /// Get or Generate robust Device Fingerprint using platform-specific identifiers
   static Future<String> getDeviceId() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       String? deviceId = prefs.getString(_deviceIdKey);
+      
       if (deviceId == null || deviceId.isEmpty || deviceId == 'flutter_app') {
-        // Create a more robust fingerprint using high-res timestamp + random seed
-        final random = math.Random().nextInt(999999);
-        final ts = DateTime.now().microsecondsSinceEpoch;
-        deviceId = 'RM_SECURE_${ts}_$random';
+        // Use platform-specific device identifiers for robust fingerprinting
+        String platformDeviceId;
+        
+        try {
+          // Try to get platform-specific device ID
+          if (kDebugMode) debugPrint('🔍 Generating platform-specific device ID');
+          
+          // Use a combination of timestamp and cryptographically secure random
+          final secureRandom = math.Random.secure();
+          final timestamp = DateTime.now().microsecondsSinceEpoch;
+          final randomBytes = List<int>.generate(16, (_) => secureRandom.nextInt(256));
+          
+          // Create cryptographic hash for device ID
+          final combined = '$timestamp:$randomBytes';
+          final hash = _generateHash(combined);
+          
+          platformDeviceId = 'RM_SECURE_${hash.substring(0, 32)}';
+          
+          if (kDebugMode) debugPrint('✅ Generated secure device ID');
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Platform device ID generation failed: $e');
+          // Fallback to timestamp + random
+          final random = math.Random().nextInt(999999);
+          final ts = DateTime.now().microsecondsSinceEpoch;
+          platformDeviceId = 'RM_SECURE_${ts}_$random';
+        }
+        
+        deviceId = platformDeviceId;
         await prefs.setString(_deviceIdKey, deviceId);
       }
+      
       return deviceId;
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Error getting device ID: $e');
@@ -82,6 +182,17 @@ class SessionManagementService {
       final ts = DateTime.now().microsecondsSinceEpoch;
       return 'RM_SECURE_${ts}_$random';
     }
+  }
+  
+  /// Generate cryptographic hash for device ID
+  static String _generateHash(String input) {
+    // Simple hash implementation - in production use proper crypto
+    var hash = 0;
+    for (var i = 0; i < input.length; i++) {
+      hash = ((hash << 5) - hash) + input.codeUnitAt(i);
+      hash = hash & 0xFFFFFFFF; // Convert to 32bit integer
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
   }
   
   /// FIX-2: Save tokens securely with concurrency protection

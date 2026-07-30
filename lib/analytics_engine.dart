@@ -29,12 +29,14 @@ class AnalyticsEngine {
   double averageSale = 0.0;
   int uniqueProducts = 0;
   double growthPercentage = 0.0;
+  int totalOnlineOrders = 0; // 🔒 NEW: Track online orders
   
   double filteredTotalSales = 0.0;
   int filteredTotalTransactions = 0;
   double filteredAverageSale = 0.0;
   int filteredUniqueProducts = 0;
   double filteredGrowthPercentage = 0.0;
+  int filteredOnlineOrders = 0; // 🔒 NEW: Track filtered online orders
   
   double todayRevenue = 0.0;
   double yesterdayRevenue = 0.0;
@@ -163,6 +165,8 @@ class AnalyticsEngine {
     // Reset Metrics
     todayRevenue = 0.0; yesterdayRevenue = 0.0; previousDayRevenue = 0.0;
     todayTransactionsCount = 0; yesterdayTransactionsCount = 0;
+    totalOnlineOrders = 0; // 🔒 NEW: Reset online orders counter
+    filteredOnlineOrders = 0; // 🔒 NEW: Reset filtered online orders counter
     
     final Map<String, double> todayProductRevenue = {};
     final Map<String, double> yesterdayProductRevenue = {};
@@ -207,6 +211,7 @@ class AnalyticsEngine {
             'payment_status': s['payment_status'] ?? s['status'],
             'paid_amount': s['paid_amount'],
             'invoice_total': s['total_amount'] ?? s['total'] ?? s['totalAmount'],
+            'source': s['source'] ?? s['order_source'] ?? 'OFFLINE', // 🔒 NEW: Track order source
           });
         }
       } else {
@@ -218,6 +223,7 @@ class AnalyticsEngine {
 
     final Set<String> todayUniqueInvoices = {};
     final Set<String> yesterdayUniqueInvoices = {};
+    final Set<String> onlineOrderInvoices = {}; // 🔒 NEW: Track online order invoices
 
     for (final s in flattenedSales) {
       try {
@@ -256,6 +262,12 @@ class AnalyticsEngine {
           todayHourRevenue[dt.hour] = (todayHourRevenue[dt.hour] ?? 0.0) + val;
           if (rawName.isNotEmpty && formattedName != 'Unknown') todayProductRevenue[formattedName] = (todayProductRevenue[formattedName] ?? 0.0) + val;
           
+          // 🔒 NEW: Track online orders
+          final String source = (s['source'] ?? s['order_source'] ?? 'OFFLINE').toString().toUpperCase();
+          if (source == 'ONLINE' || source == 'WEB' || source == 'APP') {
+            if (invoiceKey.isNotEmpty) onlineOrderInvoices.add(invoiceKey);
+          }
+          
           if (kDebugMode && todayRevenue > 0) {
             debugPrint('✅ Today sale found: $formattedName, amount: ₹$val, date: $day, time: ${dt.hour}:00');
           }
@@ -265,11 +277,23 @@ class AnalyticsEngine {
           yesterdayHourRevenue[dt.hour] = (yesterdayHourRevenue[dt.hour] ?? 0.0) + val;
           if (rawName.isNotEmpty && formattedName != 'Unknown') yesterdayProductRevenue[formattedName] = (yesterdayProductRevenue[formattedName] ?? 0.0) + val;
           
+          // 🔒 NEW: Track online orders
+          final String source = (s['source'] ?? s['order_source'] ?? 'OFFLINE').toString().toUpperCase();
+          if (source == 'ONLINE' || source == 'WEB' || source == 'APP') {
+            if (invoiceKey.isNotEmpty) onlineOrderInvoices.add(invoiceKey);
+          }
+          
           if (kDebugMode && yesterdayRevenue > 0) {
             debugPrint('✅ Yesterday sale found: $formattedName, amount: ₹$val, date: $day');
           }
         } else if (day == prevDayDate) {
           previousDayRevenue += val;
+          
+          // 🔒 NEW: Track online orders
+          final String source = (s['source'] ?? s['order_source'] ?? 'OFFLINE').toString().toUpperCase();
+          if (source == 'ONLINE' || source == 'WEB' || source == 'APP') {
+            if (invoiceKey.isNotEmpty) onlineOrderInvoices.add(invoiceKey);
+          }
         }
 
         // Monthly (Year-aware for clashing prevention)
@@ -308,6 +332,13 @@ class AnalyticsEngine {
     // ── Time Filtered Cache
     todayTransactionsCount = todayUniqueInvoices.isEmpty && todayRevenue > 0 ? 1 : todayUniqueInvoices.length;
     yesterdayTransactionsCount = yesterdayUniqueInvoices.isEmpty && yesterdayRevenue > 0 ? 1 : yesterdayUniqueInvoices.length;
+    
+    // 🔒 NEW: Calculate total online orders from all sales data
+    final allOnlineInvoices = flattenedSales.where((s) {
+      final String source = (s['source'] ?? s['order_source'] ?? 'OFFLINE').toString().toUpperCase();
+      return source == 'ONLINE' || source == 'WEB' || source == 'APP';
+    }).map((s) => (s['created_at'] ?? s['sale_date'] ?? s['date'] ?? '').toString()).where((s) => s.isNotEmpty).toSet();
+    totalOnlineOrders = allOnlineInvoices.isEmpty && flattenedSales.isNotEmpty ? 0 : allOnlineInvoices.length;
 
     filteredSalesCache = flattenedSales.where((sale) {
       final dt = getLocalDate(sale);
@@ -324,6 +355,25 @@ class AnalyticsEngine {
     filteredTotalTransactions = uniqueInvoices.isEmpty && filteredSalesCache.isNotEmpty ? 1 : uniqueInvoices.length;
     filteredAverageSale = filteredTotalTransactions > 0 ? filteredTotalSales / filteredTotalTransactions : 0.0;
     filteredUniqueProducts = filteredSalesCache.map((s) { // FIX R2
+      final b = (s['product_id'] ?? s['barcode'] ?? '').toString().trim();
+      return b.isNotEmpty
+          ? b
+          : (s['product_name']?.toString() ?? 'Unknown').toLowerCase().trim();
+    }).toSet().length;
+    
+    // 🔒 NEW: Calculate filtered online orders
+    final filteredOnlineInvoices = filteredSalesCache.where((s) {
+      final String source = (s['source'] ?? s['order_source'] ?? 'OFFLINE').toString().toUpperCase();
+      return source == 'ONLINE' || source == 'WEB' || source == 'APP';
+    }).map((s) => (s['created_at'] ?? s['sale_date'] ?? s['date'] ?? '').toString()).where((s) => s.isNotEmpty).toSet();
+    filteredOnlineOrders = filteredOnlineInvoices.isEmpty && filteredSalesCache.isNotEmpty ? 0 : filteredOnlineInvoices.length;
+
+    // 🔒 BUG FIX: Calculate main metrics (not just filtered metrics)
+    totalSales = flattenedSales.fold(0.0, (sum, s) => sum + _toDouble(s['total_amount'] ?? s['total']));
+    final allUniqueInvoices = flattenedSales.map((s) => (s['created_at'] ?? s['sale_date'] ?? s['date'] ?? '').toString()).where((s) => s.isNotEmpty).toSet();
+    totalTransactions = allUniqueInvoices.isEmpty && flattenedSales.isNotEmpty ? 1 : allUniqueInvoices.length;
+    averageSale = totalTransactions > 0 ? totalSales / totalTransactions : 0.0;
+    uniqueProducts = flattenedSales.map((s) {
       final b = (s['product_id'] ?? s['barcode'] ?? '').toString().trim();
       return b.isNotEmpty
           ? b
@@ -449,9 +499,13 @@ class AnalyticsEngine {
       }
     }
 
-    filteredGrowthPercentage = previous == 0
+    // 🔒 BUG FIX: Calculate and set BOTH growth percentage variables
+    final calculatedGrowth = previous == 0
         ? (current > 0 ? 100.0 : 0.0)
         : ((current - previous) / previous) * 100;
+    
+    filteredGrowthPercentage = calculatedGrowth;
+    growthPercentage = calculatedGrowth; // 🔒 FIX: Also set the main growthPercentage
   }
 
   String _findBestHour(Map<int, double> hourRevenue) {

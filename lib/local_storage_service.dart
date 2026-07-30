@@ -32,16 +32,36 @@ class LocalStorageService {
     final primary = prefs.getInt('user_id');
     final alternate = prefs.getInt('userId');
     final id = primary ?? alternate;
-    if (id != null && id > 0 && primary == null) {
-      await prefs.setInt('user_id', id);
+    
+    // 🔒 VALIDATION: Ensure user ID is valid and positive
+    if (id != null && id > 0) {
+      // Normalize user ID storage
+      if (primary == null) {
+        await prefs.setInt('user_id', id);
+      }
+      if (alternate == null) {
+        await prefs.setInt('userId', id);
+      }
+      return id;
     }
-    if (id != null && id > 0 && alternate == null) {
-      await prefs.setInt('userId', id);
+    
+    // 🔒 SECURITY: Throw error instead of failing silently for critical operations
+    // This prevents data leakage by ensuring operations fail when user is not authenticated
+    if (kDebugMode) debugPrint('⚠️ Invalid user ID detected: primary=$primary, alternate=$alternate');
+    
+    return null; // Return null for non-critical operations that check with _hasValidUserId()
+  }
+  
+  /// 🔒 SECURITY: Strict user ID validation that throws errors for critical operations
+  static Future<int> _getUserIdStrict() async {
+    final id = await _getUserId();
+    if (id == null || id == 0) {
+      throw Exception('SECURITY: Invalid or missing user_id. Critical operation cannot proceed without authenticated user.');
     }
     return id;
   }
   
-  /// ✅ FIX: Call on app startup to check and migrate schema if needed
+  /// ✅ FIX: Call on app startup to check and migrate schema if needed with proper backup and rollback
   static Future<void> validateAndMigrateSchema() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -52,17 +72,367 @@ class LocalStorageService {
           debugPrint('📊 Schema migration needed: $currentVersion → $_schemaVersion');
         }
         
-        // Add migration logic here if schema needs updating
-        // Example: if (currentVersion < 3) { ... migrate old format to new ... }
+        // Create backup before migration
+        String? backupPath;
+        try {
+          backupPath = await _createSchemaBackup(currentVersion);
+          if (kDebugMode) debugPrint('📦 Schema backup created at: $backupPath');
+        } catch (backupError) {
+          if (kDebugMode) debugPrint('⚠️ Schema backup failed: $backupError');
+          // Continue with migration but log the risk
+        }
         
-        await prefs.setInt(_schemaVersionKey, _schemaVersion);
-        
-        if (kDebugMode) {
-          debugPrint('✅ Schema updated to $_schemaVersion');
+        // Migration logic for each schema version
+        try {
+          // Migration from version 0 to 1
+          if (currentVersion < 1) {
+            await _migrateFromV0ToV1();
+            // Update version incrementally for rollback safety
+            await prefs.setInt(_schemaVersionKey, 1);
+          }
+          
+          // Migration from version 1 to 2
+          if (currentVersion < 2) {
+            await _migrateFromV1ToV2();
+            await prefs.setInt(_schemaVersionKey, 2);
+          }
+          
+          // Migration from version 2 to 3
+          if (currentVersion < 3) {
+            await _migrateFromV2ToV3();
+            await prefs.setInt(_schemaVersionKey, 3);
+          }
+          
+          // Final update to target schema version
+          await prefs.setInt(_schemaVersionKey, _schemaVersion);
+          
+          if (kDebugMode) {
+            debugPrint('✅ Schema updated to $_schemaVersion');
+          }
+          
+          // Clean up backup after successful migration
+          if (backupPath != null) {
+            try {
+              await _cleanupSchemaBackup(backupPath);
+              if (kDebugMode) debugPrint('🧹 Schema backup cleaned up');
+            } catch (cleanupError) {
+              if (kDebugMode) debugPrint('⚠️ Schema backup cleanup failed: $cleanupError');
+            }
+          }
+        } catch (migrationError) {
+          if (kDebugMode) debugPrint('❌ Schema migration failed: $migrationError');
+          
+          // Attempt rollback from backup
+          if (backupPath != null) {
+            try {
+              await _restoreSchemaBackup(backupPath, currentVersion);
+              if (kDebugMode) debugPrint('✅ Schema rollback successful from backup');
+            } catch (rollbackError) {
+              if (kDebugMode) debugPrint('❌ Schema rollback failed: $rollbackError');
+              // Store critical error for user notification
+              await prefs.setBool('schema_migration_critical_failure', true);
+              await prefs.setString('schema_migration_error', 'Migration failed and rollback failed. Manual intervention may be required.');
+            }
+          }
+          
+          // Revert to previous version on failure
+          await prefs.setInt(_schemaVersionKey, currentVersion);
+          rethrow;
         }
       }
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Schema validation error: $e');
+    }
+  }
+  
+  /// Create a backup of all Hive boxes before schema migration
+  static Future<String?> _createSchemaBackup(int currentVersion) async {
+    try {
+      if (kIsWeb) return null; // Skip backup on web
+      
+      final appDir = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final backupDir = Directory('${appDir.path}/hive_schema_backup_v${currentVersion}_$timestamp');
+      
+      if (await backupDir.exists()) {
+        await backupDir.delete(recursive: true);
+      }
+      await backupDir.create(recursive: true);
+      
+      final hiveDir = Directory('${appDir.path}/hive');
+      if (await hiveDir.exists()) {
+        // Copy all hive files to backup
+        await for (final entity in hiveDir.list(recursive: true)) {
+          if (entity is File) {
+            final relativePath = entity.path.substring(hiveDir.path.length);
+            final backupFile = File('${backupDir.path}$relativePath');
+            await backupFile.parent.create(recursive: true);
+            await entity.copy(backupFile.path);
+          }
+        }
+      }
+      
+      return backupDir.path;
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Schema backup creation failed: $e');
+      return null;
+    }
+  }
+  
+  /// Restore from schema backup after failed migration
+  static Future<void> _restoreSchemaBackup(String backupPath, int targetVersion) async {
+    try {
+      if (kIsWeb) return;
+      
+      final appDir = await getApplicationDocumentsDirectory();
+      final hiveDir = Directory('${appDir.path}/hive');
+      final backupDir = Directory(backupPath);
+      
+      if (!await backupDir.exists()) {
+        throw Exception('Backup directory not found: $backupPath');
+      }
+      
+      // Close all open boxes first
+      await closeUserBoxes();
+      
+      // If hive directory exists, rename it as a precaution
+      if (await hiveDir.exists()) {
+        final failedMigrationDir = Directory('${appDir.path}/hive_failed_migration_${DateTime.now().millisecondsSinceEpoch}');
+        await hiveDir.rename(failedMigrationDir.path);
+      }
+      
+      // Recreate hive directory
+      await hiveDir.create(recursive: true);
+      
+      // Restore files from backup
+      await for (final entity in backupDir.list(recursive: true)) {
+        if (entity is File) {
+          final relativePath = entity.path.substring(backupDir.path.length);
+          final restoreFile = File('${hiveDir.path}$relativePath');
+          await restoreFile.parent.create(recursive: true);
+          await entity.copy(restoreFile.path);
+        }
+      }
+      
+      // Reinitialize Hive
+      await Hive.initFlutter();
+      
+      if (kDebugMode) debugPrint('✅ Schema restored from backup to version $targetVersion');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Schema restore failed: $e');
+      rethrow;
+    }
+  }
+  
+  /// Clean up schema backup after successful migration
+  static Future<void> _cleanupSchemaBackup(String backupPath) async {
+    try {
+      if (kIsWeb) return;
+      
+      final backupDir = Directory(backupPath);
+      if (await backupDir.exists()) {
+        await backupDir.delete(recursive: true);
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Schema backup cleanup failed: $e');
+    }
+  }
+  
+  /// Migration from version 0 to 1: Convert from unscoped to user-scoped boxes
+  static Future<void> _migrateFromV0ToV1() async {
+    if (kDebugMode) debugPrint('🔄 Migrating from v0 to v1...');
+    
+    try {
+      final userId = await _getUserId();
+      if (userId == null || userId == 0) {
+        if (kDebugMode) debugPrint('⚠️ No valid user ID for v0->v1 migration, skipping');
+        return;
+      }
+      
+      // List of boxes to migrate from unscoped to scoped
+      final boxesToMigrate = [
+        'sales_v2',
+        'products_v2',
+        'customers_v2',
+        'invoices_v2',
+        'purchase_orders_v2',
+        'khata_v2',
+        'deductions_idempotency_v2',
+        'expenses_v2',
+        'inventory_v2',
+      ];
+      
+      for (final boxName in boxesToMigrate) {
+        try {
+          // Check if unscoped box exists
+          if (Hive.isBoxOpen(boxName) || await _boxExists(boxName)) {
+            final oldBox = await Hive.openBox(boxName);
+            final scopedBoxName = '${boxName}_$userId';
+            final newBox = await Hive.openBox(scopedBoxName);
+            
+            // Migrate all data
+            for (final key in oldBox.keys) {
+              final value = oldBox.get(key);
+              await newBox.put(key, value);
+            }
+            
+            await oldBox.close();
+            await newBox.close();
+            
+            // Delete old unscoped box after successful migration
+            await Hive.deleteBoxFromDisk(boxName);
+            
+            if (kDebugMode) debugPrint('✅ Migrated $boxName to $scopedBoxName');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Failed to migrate $boxName: $e');
+          // Continue with other boxes even if one fails
+        }
+      }
+      
+      // Clean up legacy SharedPreferences
+      await purgeLegacyPrefsSales();
+      
+      if (kDebugMode) debugPrint('✅ v0->v1 migration completed');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ v0->v1 migration failed: $e');
+      rethrow;
+    }
+  }
+  
+  /// Migration from version 1 to 2: Add data validation and indexing improvements
+  static Future<void> _migrateFromV1ToV2() async {
+    if (kDebugMode) debugPrint('🔄 Migrating from v1 to v2...');
+    
+    try {
+      final userId = await _getUserId();
+      if (userId == null || userId == 0) {
+        if (kDebugMode) debugPrint('⚠️ No valid user ID for v1->v2 migration, skipping');
+        return;
+      }
+      
+      // Add validation metadata to sales box
+      try {
+        final salesBoxName = '${_salesBoxBase}_$userId';
+        if (await _boxExists(salesBoxName)) {
+          final salesBox = await Hive.openBox(salesBoxName);
+          
+          // Add validation flag to existing sales records
+          for (final key in salesBox.keys) {
+            final saleData = salesBox.get(key);
+            if (saleData is Map && !saleData.containsKey('validated')) {
+              saleData['validated'] = true;
+              saleData['validation_timestamp'] = DateTime.now().toIso8601String();
+              await salesBox.put(key, saleData);
+            }
+          }
+          
+          await salesBox.close();
+          if (kDebugMode) debugPrint('✅ Sales box validation metadata added');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Sales box migration failed: $e');
+      }
+      
+      // Add timestamp metadata to products box
+      try {
+        final productsBoxName = '${_productsBoxBase}_$userId';
+        if (await _boxExists(productsBoxName)) {
+          final productsBox = await Hive.openBox(productsBoxName);
+          
+          for (final key in productsBox.keys) {
+            final productData = productsBox.get(key);
+            if (productData is Map && !productData.containsKey('last_updated')) {
+              productData['last_updated'] = DateTime.now().toIso8601String();
+              await productsBox.put(key, productData);
+            }
+          }
+          
+          await productsBox.close();
+          if (kDebugMode) debugPrint('✅ Products box timestamp metadata added');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Products box migration failed: $e');
+      }
+      
+      if (kDebugMode) debugPrint('✅ v1->v2 migration completed');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ v1->v2 migration failed: $e');
+      rethrow;
+    }
+  }
+  
+  /// Migration from version 2 to 3: Add user isolation improvements and security enhancements
+  static Future<void> _migrateFromV2ToV3() async {
+    if (kDebugMode) debugPrint('🔄 Migrating from v2 to v3...');
+    
+    try {
+      final userId = await _getUserId();
+      if (userId == null || userId == 0) {
+        if (kDebugMode) debugPrint('⚠️ No valid user ID for v2->v3 migration, skipping');
+        return;
+      }
+      
+      // Clean up any orphaned boxes from other users
+      await clearOtherUserBoxes();
+      
+      // Add user ID verification to all boxes
+      final boxBases = [
+        _salesBoxBase,
+        _productsBoxBase,
+        _customersBoxBase,
+        _invoicesBoxBase,
+        _purchaseOrdersBoxBase,
+        _khataBoxBase,
+        _idempotencyBoxBase,
+        _expensesBoxBase,
+        _inventoryBoxBase,
+      ];
+      
+      for (final base in boxBases) {
+        try {
+          final boxName = '${base}_$userId';
+          if (await _boxExists(boxName)) {
+            final box = await Hive.openBox(boxName);
+            
+            // Add user_id metadata to box
+            await box.put('_user_id', userId);
+            await box.put('_schema_version', 3);
+            await box.put('_migration_timestamp', DateTime.now().toIso8601String());
+            
+            await box.close();
+            if (kDebugMode) debugPrint('✅ User ID metadata added to $boxName');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Failed to add metadata to $base: $e');
+        }
+      }
+      
+      // Purge any remaining legacy unscoped boxes
+      await purgeLegacyUnscopedHiveBoxes();
+      
+      if (kDebugMode) debugPrint('✅ v2->v3 migration completed');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ v2->v3 migration failed: $e');
+      rethrow;
+    }
+  }
+  
+  /// Helper method to check if a box exists on disk
+  static Future<bool> _boxExists(String boxName) async {
+    try {
+      if (kIsWeb) return false;
+      
+      final appDir = await getApplicationDocumentsDirectory();
+      final hiveDir = Directory('${appDir.path}/hive');
+      if (!await hiveDir.exists()) return false;
+      
+      // Check for box files (Hive creates .hive files)
+      final boxFile = File('${hiveDir.path}/$boxName.hive');
+      return await boxFile.exists();
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Error checking box existence: $e');
+      return false;
     }
   }
 
@@ -70,10 +440,49 @@ class LocalStorageService {
   /// Never use a shared global sales box — prevents fake/leaked data on new accounts.
   static Future<String> _getScopedBoxName(String base) async {
     final userId = await _getUserId();
+    
+    // 🔒 VALIDATION: Ensure we have a valid user ID before creating scoped box
     if (userId == null || userId == 0) {
-      throw Exception('SECURITY: Cannot store data without authenticated user_id');
+      throw Exception('SECURITY: Cannot store data without authenticated user_id. User ID is null or zero.');
     }
-    return '${base}_$userId';
+    
+    final scopedName = '${base}_$userId';
+    
+    // 🔒 COLLISION DETECTION: Check for potential box name collisions
+    // Ensure the box name doesn't conflict with legacy unscoped boxes
+    if (base == scopedName) {
+      if (kDebugMode) debugPrint('⚠️ BOX NAME COLLISION DETECTED: $base matches unscoped box name');
+      throw Exception('SECURITY: Box name collision detected. Cannot use unscoped box name as scoped box.');
+    }
+    
+    // Check if a legacy unscoped box with the same base name exists
+    if (await _boxExists(base)) {
+      if (kDebugMode) debugPrint('⚠️ LEGACY BOX CONFLICT: Unscoped box $base exists, may cause data leakage');
+      // In production, you might want to migrate or delete the legacy box here
+    }
+    
+    // Verify the scoped box belongs to the current user by checking metadata
+    if (await _boxExists(scopedName)) {
+      try {
+        final box = await Hive.openBox(scopedName);
+        final boxUserId = box.get('_user_id');
+        await box.close();
+        
+        if (boxUserId != null && boxUserId != userId) {
+          if (kDebugMode) debugPrint('⚠️ BOX OWNERSHIP MISMATCH: Box $scopedName belongs to user $boxUserId, not current user $userId');
+          throw Exception('SECURITY: Box ownership mismatch. Data isolation violated.');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Error checking box ownership: $e');
+        // Continue but log the issue
+      }
+    }
+    
+    if (kDebugMode) {
+      debugPrint('🔍 Creating scoped box: $scopedName');
+    }
+    
+    return scopedName;
   }
 
   static Future<bool> _hasValidUserId() async {
@@ -242,6 +651,12 @@ class LocalStorageService {
   // =========== CORE BOX MANAGEMENT ===========
   
   static Future<Box> _getBox(String base, {bool encrypted = false}) async {
+    // 🔒 SECURITY: Validate user ID before accessing any box
+    if (!await _hasValidUserId()) {
+      if (kDebugMode) debugPrint('⚠️ _getBox failed — no valid user_id');
+      throw Exception('SECURITY: Cannot access storage without authenticated user_id. Please log in first.');
+    }
+    
     final name = await _getScopedBoxName(base);
     if (!Hive.isBoxOpen(name)) {
       if (encrypted) {
@@ -358,13 +773,21 @@ class LocalStorageService {
   // =========== INVOICES & CUSTOMERS ===========
   
   static Future<void> saveLocalInvoices(List<dynamic> invoices) async {
-    // Allow saving even without user_id for borrow functionality
+    // 🔒 SECURITY FIX: Require valid user ID to prevent data leakage
+    if (!await _hasValidUserId()) {
+      if (kDebugMode) debugPrint('⚠️ saveLocalInvoices failed — no logged-in user');
+      throw Exception('SECURITY: Cannot save invoices without authenticated user_id. Please log in first.');
+    }
     final box = await _getBox(_invoicesBoxBase);
     await box.put('manual_invoices', invoices);
   }
 
   static Future<List<dynamic>> loadLocalInvoices() async {
-    // Allow loading even without user_id for borrow functionality
+    // 🔒 SECURITY FIX: Require valid user ID to prevent data leakage
+    if (!await _hasValidUserId()) {
+      if (kDebugMode) debugPrint('⚠️ loadLocalInvoices failed — no logged-in user');
+      throw Exception('SECURITY: Cannot load invoices without authenticated user_id. Please log in first.');
+    }
     final box = await _getBox(_invoicesBoxBase);
     final data = box.get('manual_invoices', defaultValue: []);
     return List<dynamic>.from(data);

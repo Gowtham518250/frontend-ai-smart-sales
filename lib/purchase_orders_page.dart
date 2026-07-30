@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 
 class PurchaseOrdersPage extends StatefulWidget {
@@ -24,13 +25,36 @@ class _PurchaseOrdersPageState extends State<PurchaseOrdersPage> {
 
   Future<void> _fetchOrders() async {
     try {
-      final res = await ApiClient.getJson('/purchase-orders/');
-      if (res.statusCode == 200) {
-        final d = jsonDecode(res.body);
-        setState(() => _orders = d is List ? d : (d['orders'] ?? []));
+      // Load from local storage first for immediate response (offline-first)
+      final prefs = await SharedPreferences.getInstance();
+      final localPOData = prefs.getString('purchase_orders_data');
+      
+      if (localPOData != null && localPOData.isNotEmpty) {
+        try {
+          final d = jsonDecode(localPOData);
+          setState(() => _orders = d is List ? d : (d['orders'] ?? []));
+          debugPrint('✅ Purchase orders loaded from local storage');
+        } catch (e) {
+          debugPrint('⚠️ Error parsing local PO data: $e');
+        }
+      }
+      
+      // Then sync with backend for latest data
+      try {
+        final res = await ApiClient.getJson('/purchase-orders/');
+        if (res.statusCode == 200) {
+          final d = jsonDecode(res.body);
+          setState(() => _orders = d is List ? d : (d['orders'] ?? []));
+          // Save to local storage for offline use
+          await prefs.setString('purchase_orders_data', json.encode(d));
+          debugPrint('✅ Purchase orders synced from backend');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Backend PO sync failed, using local data: $e');
+        // Keep using local data if backend sync fails
       }
     } catch (e) {
-      debugPrint('PO fetch error: $e');
+      debugPrint('❌ PO fetch error: $e');
     } finally {
       setState(() => _loading = false);
     }
@@ -45,8 +69,15 @@ class _PurchaseOrdersPageState extends State<PurchaseOrdersPage> {
   }
 
   Future<void> _markDelivered(dynamic poId) async {
-    await ApiClient.postJson('/purchase-orders/$poId/mark-delivered', {});
-    _fetchOrders();
+    try {
+      await ApiClient.postJson('/purchase-orders/$poId/mark-delivered', {});
+      // Sync with backend and refresh local data
+      await _fetchOrders();
+    } catch (e) {
+      debugPrint('⚠️ Failed to mark PO as delivered: $e');
+      // Still refresh local data even if backend sync fails
+      await _fetchOrders();
+    }
   }
 
   Future<void> _cancelPO(dynamic poId) async {

@@ -214,6 +214,7 @@ class _DashboardPageState extends State<DashboardPage>
   // Performance optimization: Cache today's metrics to avoid recalculation
   double? _cachedTodaySales;
   int? _cachedTodayOrders;
+  int? _cachedTodayOnlineOrders; // 🔒 NEW: Cache today's online orders
   DateTime? _lastMetricsCacheDate;
   // Soundbox & Welcome Card state
   bool _soundboxActive = false;
@@ -4463,18 +4464,18 @@ class _DashboardPageState extends State<DashboardPage>
 
     final items = [
       {
-        'lbl': AppLocalizations.of(context).sales,
+        'lbl': 'Total Sales', // 🔒 CHANGED: From "Sales" to "Total Sales"
         'val': _formatValue(totalSales),
         'chg': gText,
       },
       {
-        'lbl': AppLocalizations.of(context).transactions,
+        'lbl': 'Total Bills', // 🔒 CHANGED: From "Transactions" to "Total Bills"
         'val': '$totalTransactions',
         'chg': gText,
       },
       {
-        'lbl': AppLocalizations.of(context).avgOrder,
-        'val': _formatValue(averageSale),
+        'lbl': 'Online Orders', // 🔒 CHANGED: From "Avg Order" to "Online Orders"
+        'val': '${engine.totalOnlineOrders}', // 🔒 NEW: Show online orders count
         'chg': gText,
       },
       {
@@ -9741,9 +9742,9 @@ class _DashboardPageState extends State<DashboardPage>
           // Today's Metrics Row
           Row(
             children: [
-              _buildMetricCard('Today\'s Revenue', '₹${_formatCompactNumber(todaySales)}', Icons.attach_money, const Color(0xFF10B981)),
+              _buildMetricCard('Total Sales', '₹${_formatCompactNumber(todaySales)}', Icons.attach_money, const Color(0xFF10B981)), // 🔒 CHANGED: "Today's Revenue" to "Total Sales"
               const SizedBox(width: 12),
-              _buildMetricCard('Today\'s Orders', todayOrders.toString(), Icons.shopping_cart, const Color(0xFF3B82F6)),
+              _buildMetricCard('Total Bills', todayOrders.toString(), Icons.shopping_cart, const Color(0xFF3B82F6)), // 🔒 CHANGED: "Today's Orders" to "Total Bills"
               const SizedBox(width: 12),
               _buildMetricCard('Low Stock', lowStockCount.toString(), Icons.warning, const Color(0xFFF59E0B), isWarning: lowStockCount > 0),
             ],
@@ -11126,13 +11127,14 @@ class _DashboardPageState extends State<DashboardPage>
                           if (bytes != null) {
                             bool isValidQr = false;
                             if (path != null) {
-                              final controller = MobileScannerController();
+                              MobileScannerController? controller;
                               try {
+                                controller = MobileScannerController();
                                 final capture = await controller.analyzeImage(
                                   path,
                                 );
                                 if (capture != null &&
-                                    capture.barcodes.any(
+                                    capture.barcades.any(
                                       (b) => b.format == BarcodeFormat.qrCode,
                                     )) {
                                   isValidQr = true;
@@ -11141,7 +11143,8 @@ class _DashboardPageState extends State<DashboardPage>
                                 if (kDebugMode)
                                   debugPrint("Verification error: $e");
                               } finally {
-                                controller.dispose();
+                                // Ensure controller is disposed in all cases
+                                controller?.dispose();
                               }
                             } else {
                               isValidQr = true; // Fallback

@@ -51,6 +51,7 @@ import 'session_management.dart';
 import 'qr_scanner_page_stub.dart'
   if (dart.library.io) 'qr_scanner_page.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:async/async.dart' show CancelToken;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'shop_profile_page.dart';
 import 'owner_biometric_register_page.dart';
@@ -124,84 +125,348 @@ import 'uuid_service.dart';
 import 'operation_queue_service.dart';
 import 'enhanced_local_storage_service.dart';
 import 'background_sync_worker.dart';
+import 'error_boundary.dart';
+import 'input_validation_service.dart';
+import 'timeout_config.dart';
+import 'data_validation_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // 🚨 FIREBASE & CRASHLYTICS INITIALIZATION
+  bool firebaseInitialized = false;
   try {
     if (kIsWeb) {
-      // Web Firebase options (replace with your actual Firebase web config!)
-      await Firebase.initializeApp(
-        options: const FirebaseOptions(
-          apiKey: "YOUR_WEB_API_KEY", // Replace
-          authDomain: "YOUR_PROJECT.firebaseapp.com", // Replace
-          projectId: "YOUR_PROJECT_ID", // Replace
-          storageBucket: "YOUR_PROJECT.appspot.com", // Replace
-          messagingSenderId: "YOUR_SENDER_ID", // Replace
-          appId: "YOUR_WEB_APP_ID", // Replace
-        ),
-      );
+      // Web Firebase options - use environment variables or actual config
+      final webApiKey = const String.fromEnvironment('FIREBASE_WEB_API_KEY', defaultValue: '');
+      final authDomain = const String.fromEnvironment('FIREBASE_AUTH_DOMAIN', defaultValue: '');
+      final projectId = const String.fromEnvironment('FIREBASE_PROJECT_ID', defaultValue: '');
+      final storageBucket = const String.fromEnvironment('FIREBASE_STORAGE_BUCKET', defaultValue: '');
+      final messagingSenderId = const String.fromEnvironment('FIREBASE_SENDER_ID', defaultValue: '');
+      final appId = const String.fromEnvironment('FIREBASE_WEB_APP_ID', defaultValue: '');
+      
+      if (webApiKey.isNotEmpty && projectId.isNotEmpty) {
+        await Firebase.initializeApp(
+          options: FirebaseOptions(
+            apiKey: webApiKey,
+            authDomain: authDomain.isNotEmpty ? authDomain : '$projectId.firebaseapp.com',
+            projectId: projectId,
+            storageBucket: storageBucket.isNotEmpty ? storageBucket : '$projectId.appspot.com',
+            messagingSenderId: messagingSenderId.isNotEmpty ? messagingSenderId : null,
+            appId: appId,
+          ),
+        );
+        firebaseInitialized = true;
+        debugPrint('✅ Firebase initialized for web with environment config');
+      } else {
+        debugPrint('⚠️ Firebase web credentials not provided in environment variables. Firebase features disabled.');
+        // Disable Firebase-dependent features
+        firebaseInitialized = false;
+      }
+      
       debugPrint('⚠️ Crashlytics not supported on web, skipping.');
     } else {
-      await Firebase.initializeApp();
-      
-      // Capture all errors in Crashlytics (production only)
-      FlutterError.onError = (FlutterErrorDetails details) {
-        FirebaseCrashlytics.instance.recordFlutterError(details);
-        if (kDebugMode) {
-          FlutterError.presentError(details);
-        }
-      };
-      
-      // Capture async errors
-      PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
-        FirebaseCrashlytics.instance.recordError(error, stack);
-        if (kDebugMode) {
-          debugPrint('Uncaught async error: $error\n$stack');
-        }
-        return true;
-      };
-      
-      if (kDebugMode) {
-        // Disable Crashlytics in debug mode for faster development
-        await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(false);
-      } else {
-        // Enable collection in production
-        await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
-      }
-      
-      // Initialize Push Notifications
+      // Mobile Firebase initialization with proper error handling and retry logic
       try {
-        await PushNotificationService.initialize();
-        debugPrint('✅ Push Notification Service initialized');
-      } catch (e) {
-        debugPrint('⚠️ Push Notification init error: $e');
+        await Firebase.initializeApp();
+        firebaseInitialized = true;
+        debugPrint('✅ Firebase initialized for mobile');
+        
+        // Store initialization state immediately after successful init
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('firebase_initialized', true);
+        
+        // Capture all errors in Crashlytics (production only)
+        FlutterError.onError = (FlutterErrorDetails details) {
+          if (firebaseInitialized) {
+            FirebaseCrashlytics.instance.recordFlutterError(details);
+          }
+          if (kDebugMode) {
+            FlutterError.presentError(details);
+          }
+        };
+        
+        // Capture async errors
+        PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+          if (firebaseInitialized) {
+            FirebaseCrashlytics.instance.recordError(error, stack);
+          }
+          if (kDebugMode) {
+            debugPrint('Uncaught async error: $error\n$stack');
+          }
+          return true;
+        };
+        
+        if (kDebugMode) {
+          // Disable Crashlytics in debug mode for faster development
+          if (firebaseInitialized) {
+            await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(false);
+          }
+        } else {
+          // Enable collection in production
+          if (firebaseInitialized) {
+            await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true);
+          }
+        }
+        
+        // Initialize Push Notifications only if Firebase is initialized
+        try {
+          await PushNotificationService.initialize();
+          debugPrint('✅ Push Notification Service initialized');
+        } catch (e) {
+          debugPrint('⚠️ Push Notification init error: $e');
+          // Don't disable Firebase entirely - push notifications might fail while other features work
+          await prefs.setBool('push_notifications_enabled', false);
+        }
+        
+        debugPrint('✅ Firebase & Crashlytics initialized');
+      } catch (firebaseError) {
+        debugPrint('🚨 Firebase mobile initialization failed: $firebaseError');
+        firebaseInitialized = false;
+        
+        // Store failure state
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('firebase_initialized', false);
+        await prefs.setString('firebase_init_error', firebaseError.toString());
+        await prefs.setInt('firebase_init_error_timestamp', DateTime.now().millisecondsSinceEpoch);
+        
+        // Set up basic error handlers even without Firebase
+        FlutterError.onError = (FlutterErrorDetails details) {
+          if (kDebugMode) {
+            FlutterError.presentError(details);
+          }
+        };
+        
+        PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+          if (kDebugMode) {
+            debugPrint('Uncaught async error (Firebase unavailable): $error\n$stack');
+          }
+          return true;
+        };
+        
+        debugPrint('⚠️ Running without Firebase - crash reporting and push notifications disabled');
       }
-      
-      debugPrint('✅ Firebase & Crashlytics initialized');
     }
   } catch (e) {
-    debugPrint('⚠️ Firebase init error: $e');
+    debugPrint('🚨 Firebase outer initialization error: $e');
+    firebaseInitialized = false;
+    // Store Firebase initialization state for feature flagging
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('firebase_initialized', false);
+    await prefs.setString('firebase_init_error', e.toString());
+    await prefs.setInt('firebase_init_error_timestamp', DateTime.now().millisecondsSinceEpoch);
+    
+    // Set up basic error handlers even without Firebase
+    FlutterError.onError = (FlutterErrorDetails details) {
+      if (kDebugMode) {
+        FlutterError.presentError(details);
+      }
+    };
+    
+    PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+      if (kDebugMode) {
+        debugPrint('Uncaught async error (Firebase unavailable): $error\n$stack');
+      }
+      return true;
+    };
+  }
+  
+  // Store Firebase initialization state for feature flagging (if not already set)
+  final prefs = await SharedPreferences.getInstance();
+  if (!prefs.containsKey('firebase_initialized')) {
+    await prefs.setBool('firebase_initialized', firebaseInitialized);
   }
   
   // 🔊 Background service initialization deferred to post-frame callback in MyApp to prevent startup crashes
   
-  // 🛡️ SELF-HEALING HIVE INITIALIZATION (100/100 STABILITY)
+  // 🛡️ SAFE HIVE INITIALIZATION WITH PROPER BACKUP AND ROLLBACK (100/100 STABILITY)
+  bool hiveRecoveryNeeded = false;
+  String? hiveBackupPath;
+  bool hiveInitSuccess = false;
+  
   try {
     await Hive.initFlutter();
+    hiveInitSuccess = true;
+    debugPrint('✅ Hive initialized successfully');
+    
+    // Verify Hive is working by attempting a simple operation
+    try {
+      final testBox = await Hive.openBox('hive_init_test');
+      await testBox.put('init_test', DateTime.now().toIso8601String());
+      await testBox.delete('init_test');
+      await testBox.close();
+      await Hive.deleteBoxFromDisk('hive_init_test');
+      debugPrint('✅ Hive initialization verified');
+    } catch (verifyError) {
+      debugPrint('⚠️ Hive verification failed: $verifyError');
+      hiveInitSuccess = false;
+      hiveRecoveryNeeded = true;
+    }
   } catch (e) {
     debugPrint('🚨 Hive init failure: $e');
-    if (!kIsWeb) {
-      // Wipe and retry only on mobile/desktop
+    hiveInitSuccess = false;
+    hiveRecoveryNeeded = true;
+  }
+  
+  // If Hive initialization failed, attempt recovery with proper backup and rollback
+  if (!hiveInitSuccess && !kIsWeb) {
+    debugPrint('🔄 Attempting Hive recovery with backup...');
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final hiveDir = Directory('${appDir.path}/hive');
+      
+      // Create timestamped backup with verification
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final backupDir = Directory('${appDir.path}/hive_backup_$timestamp');
+      
+      if (await hiveDir.exists()) {
+        // Verify backup directory doesn't already exist
+        if (await backupDir.exists()) {
+          debugPrint('⚠️ Backup directory already exists, using alternative name');
+          final altTimestamp = timestamp + 1;
+          final altBackupDir = Directory('${appDir.path}/hive_backup_$altTimestamp');
+          await hiveDir.rename(altBackupDir.path);
+          hiveBackupPath = altBackupDir.path;
+        } else {
+          await hiveDir.rename(backupDir.path);
+          hiveBackupPath = backupDir.path;
+        }
+        
+        // Verify backup was created successfully
+        if (await Directory(hiveBackupPath!).exists()) {
+          debugPrint('📦 Hive data backed up to: $hiveBackupPath');
+          
+          // Store backup info in SharedPreferences for potential restore
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('hive_backup_path', hiveBackupPath);
+          await prefs.setInt('hive_backup_timestamp', timestamp);
+          
+          // Try to recover with fresh Hive initialization
+          try {
+            await Hive.initFlutter();
+            
+            // Verify the fresh initialization works
+            final testBox = await Hive.openBox('recovery_test');
+            await testBox.put('test', 'success');
+            await testBox.delete('test');
+            await testBox.close();
+            await Hive.deleteBoxFromDisk('recovery_test');
+            
+            debugPrint('✅ Hive recovered successfully with fresh initialization');
+            hiveRecoveryNeeded = false;
+            
+            // Mark recovery as successful
+            await prefs.setBool('hive_recovery_success', true);
+            await prefs.setInt('hive_recovery_timestamp', DateTime.now().millisecondsSinceEpoch);
+          } catch (recoveryError) {
+            debugPrint('❌ Fresh Hive initialization failed: $recoveryError');
+            hiveRecoveryNeeded = true;
+            
+            // ROLLBACK: Attempt to restore from backup
+            debugPrint('🔄 Attempting rollback from backup...');
+            try {
+              if (await hiveDir.exists()) {
+                await hiveDir.delete(recursive: true);
+              }
+              await Directory(hiveBackupPath!).rename(hiveDir.path);
+              debugPrint('✅ Rollback successful - data restored from backup');
+              
+              // Try initialization with restored data
+              await Hive.initFlutter();
+              debugPrint('✅ Hive initialized with restored data');
+              hiveRecoveryNeeded = false;
+              
+              await prefs.setBool('hive_rollback_success', true);
+            } catch (rollbackError) {
+              debugPrint('❌ Rollback failed: $rollbackError');
+              // Keep backup directory for manual recovery
+              await prefs.setBool('hive_recovery_needed', true);
+              await prefs.setBool('hive_rollback_failed', true);
+              await prefs.setString('hive_error', 'Recovery and rollback both failed. Manual intervention may be needed.');
+            }
+          }
+        } else {
+          debugPrint('❌ Backup verification failed - backup directory not found');
+          hiveRecoveryNeeded = true;
+        }
+      } else {
+        debugPrint('⚠️ Hive directory does not exist, creating fresh initialization');
+        await Hive.initFlutter();
+        hiveRecoveryNeeded = false;
+        debugPrint('✅ Fresh Hive initialization completed');
+      }
+    } catch (backupError) {
+      debugPrint('❌ Backup/recovery process failed: $backupError');
+      hiveRecoveryNeeded = true;
+      
+      // LAST RESORT: Create emergency backup before deletion
       try {
         final appDir = await getApplicationDocumentsDirectory();
         final hiveDir = Directory('${appDir.path}/hive');
-        if (await hiveDir.exists()) await hiveDir.delete(recursive: true);
-        await Hive.initFlutter();
-      } catch (_) {}
+        
+        // Create emergency backup with unique timestamp
+        final emergencyTimestamp = DateTime.now().millisecondsSinceEpoch;
+        final emergencyBackup = Directory('${appDir.path}/hive_emergency_backup_$emergencyTimestamp');
+        
+        if (await hiveDir.exists()) {
+          await hiveDir.rename(emergencyBackup.path);
+          debugPrint('📦 Emergency backup created: ${emergencyBackup.path}');
+          
+          // Store emergency backup info
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('hive_emergency_backup_path', emergencyBackup.path);
+          await prefs.setInt('hive_emergency_backup_timestamp', emergencyTimestamp);
+          
+          // Try to reinitialize with fresh Hive
+          try {
+            await Hive.initFlutter();
+            
+            // Verify fresh initialization
+            final testBox = await Hive.openBox('emergency_test');
+            await testBox.put('test', 'success');
+            await testBox.delete('test');
+            await testBox.close();
+            await Hive.deleteBoxFromDisk('emergency_test');
+            
+            debugPrint('✅ Hive reinitialized after emergency backup');
+            hiveRecoveryNeeded = false;
+            await prefs.setBool('hive_emergency_recovery', true);
+          } catch (freshInitError) {
+            debugPrint('❌ Fresh initialization after emergency backup failed: $freshInitError');
+            // Attempt rollback from emergency backup
+            try {
+              if (await hiveDir.exists()) {
+                await hiveDir.delete(recursive: true);
+              }
+              await emergencyBackup.rename(hiveDir.path);
+              await Hive.initFlutter();
+              debugPrint('✅ Rollback from emergency backup successful');
+              hiveRecoveryNeeded = false;
+            } catch (emergencyRollbackError) {
+              debugPrint('❌ Emergency rollback failed: $emergencyRollbackError');
+              await prefs.setBool('hive_critical_failure', true);
+              await prefs.setString('hive_critical_error', 'Multiple recovery attempts failed. Manual recovery required.');
+            }
+          }
+        } else {
+          // No existing hive directory, create fresh
+          await Hive.initFlutter();
+          hiveRecoveryNeeded = false;
+          debugPrint('✅ Fresh Hive initialization (no existing data)');
+        }
+      } catch (emergencyError) {
+        debugPrint('❌ Emergency backup process failed: $emergencyError');
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('hive_critical_failure', true);
+        await prefs.setString('hive_critical_error', emergencyError.toString());
+      }
     }
   }
+  
+  // Store final Hive status
+  final hivePrefs = await SharedPreferences.getInstance();
+  await hivePrefs.setBool('hive_recovery_needed', hiveRecoveryNeeded);
+  await hivePrefs.setBool('hive_initialized', hiveInitSuccess || !hiveRecoveryNeeded);
 
   // 🚀 PRODUCTION ARCHITECTURE INITIALIZATION (Ultra-Fast + Zero Data Loss)
   try {
@@ -310,6 +575,19 @@ void main() async {
       // ✅ FIX: Validate device time at startup (prevents fraud)
       await SyncService.getAuthoritativeTime();
       
+      // 🔒 DATA VALIDATION: Perform quick data integrity check
+      try {
+        final integritySummary = await DataValidationService.instance.performQuickIntegrityCheck();
+        if (integritySummary.hasCriticalIssues()) {
+          if (kDebugMode) debugPrint('⚠️ Critical data integrity issues detected: $integritySummary');
+          // Could show user notification here
+        } else {
+          if (kDebugMode) debugPrint('✅ Data integrity check passed');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Data integrity check failed: $e');
+      }
+      
       // Initialize Smart Notifications Service (daily summary, stock alerts, loyalty milestones)
       try {
         await SmartNotificationsService.init();
@@ -325,9 +603,11 @@ void main() async {
   });
 
   runApp(
-    MultiProvider(
-      providers: createAppProviders(),
-      child: const MyApp(),
+    ErrorBoundary(
+      child: MultiProvider(
+        providers: createAppProviders(),
+        child: const MyApp(),
+      ),
     ),
   );
 }
@@ -337,6 +617,15 @@ void main() async {
 const String chatbotEndpoint = '/chatbot/';
 const String loginEndpoint = '/auth/login';
 const String registerEndpoint = '/auth/register';
+
+// Custom exception for operation cancellation
+class OperationCancelledException implements Exception {
+  final String message;
+  OperationCancelledException([this.message = 'Operation was cancelled']);
+  
+  @override
+  String toString() => 'OperationCancelledException: $message';
+}
 
 class _AppBootSplash extends StatelessWidget {
   const _AppBootSplash();
@@ -377,6 +666,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   late Future<bool> _loggedInFuture;
   bool _hasSeenOnboarding = false;
   DateTime? _lastBackgroundTime;
+  CancelToken? _syncCancelToken; // Add cancellation token for sync operations
 
   @override
   void initState() {
@@ -449,13 +739,17 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     
     if (kDebugMode) debugPrint('📱 App lifecycle changed: $state');
     
+    // Cancel any ongoing sync operations when app goes to background
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _syncCancelToken?.cancel();
+      _syncCancelToken = null;
+    }
+    
     switch (state) {
       case AppLifecycleState.resumed:
-        // App returned from background - force full sync
         _handleAppResumed();
         break;
       case AppLifecycleState.paused:
-        // App went to background - record time
         _lastBackgroundTime = DateTime.now();
         if (kDebugMode) debugPrint('⏸️ App paused at $_lastBackgroundTime');
         break;
@@ -469,44 +763,83 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   Future<void> _handleAppResumed() async {
     if (_lastBackgroundTime == null) return;
     
-    final backgroundDuration = DateTime.now().difference(_lastBackgroundTime!);
-    if (kDebugMode) debugPrint('▶️ App resumed after ${backgroundDuration.inMinutes} minutes');
+    // Create cancel token for this sync operation
+    _syncCancelToken = CancelToken();
     
-    // Force sync if app was in background for more than 5 minutes
-    if (backgroundDuration.inMinutes > 5) {
-      if (kDebugMode) debugPrint('🔄 Long background period detected - forcing full sync');
+    try {
+      final backgroundDuration = DateTime.now().difference(_lastBackgroundTime!);
+      if (kDebugMode) debugPrint('▶️ App resumed after ${backgroundDuration.inMinutes} minutes');
       
-      // Import and use background sync worker
-      try {
-        // Force immediate sync of all data
-        await _forceFullSync();
-      } catch (e) {
-        if (kDebugMode) debugPrint('⚠️ Force sync failed: $e');
+      if (backgroundDuration.inMinutes > 5) {
+        if (kDebugMode) debugPrint('🔄 Long background period detected - forcing full sync');
+        
+        try {
+          await _forceFullSync(_syncCancelToken);
+        } catch (e) {
+          if (e is OperationCancelledException) {
+            if (kDebugMode) debugPrint('⚠️ Sync cancelled due to lifecycle change');
+          } else {
+            if (kDebugMode) debugPrint('⚠️ Force sync failed: $e');
+          }
+        }
       }
+    } finally {
+      _lastBackgroundTime = null;
+      _syncCancelToken = null;
     }
-    
-    _lastBackgroundTime = null;
   }
 
-  Future<void> _forceFullSync() async {
+  Future<void> _forceFullSync(CancelToken? cancelToken) async {
     if (kDebugMode) debugPrint('🚀 Starting full background sync');
+    
+    // Check for cancellation
+    if (cancelToken?.isCancelled == true) {
+      throw OperationCancelledException();
+    }
     
     try {
       // Process operation queue using the enhanced sync system
       await BackgroundSyncWorker.instance.forceSync();
       
+      // Check for cancellation
+      if (cancelToken?.isCancelled == true) {
+        throw OperationCancelledException();
+      }
+      
       // Process legacy sync queue for backward compatibility
       await _processSyncQueue();
+      
+      // Check for cancellation
+      if (cancelToken?.isCancelled == true) {
+        throw OperationCancelledException();
+      }
       
       // Check network and sync latest data
       final connectivityResult = await Connectivity().checkConnectivity();
       if (connectivityResult != ConnectivityResult.none) {
         if (kDebugMode) debugPrint('🌐 Network available - syncing latest data');
         
-        // Sync all critical data types
         await _syncSalesData();
+        
+        // Check for cancellation
+        if (cancelToken?.isCancelled == true) {
+          throw OperationCancelledException();
+        }
+        
         await _syncInventoryData();
+        
+        // Check for cancellation
+        if (cancelToken?.isCancelled == true) {
+          throw OperationCancelledException();
+        }
+        
         await _syncCustomerData();
+        
+        // Check for cancellation
+        if (cancelToken?.isCancelled == true) {
+          throw OperationCancelledException();
+        }
+        
         await _syncShopData();
         
         if (kDebugMode) debugPrint('✅ Full sync completed');
@@ -514,6 +847,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         if (kDebugMode) debugPrint('🌐 No network - data will sync when available');
       }
     } catch (e) {
+      if (e is OperationCancelledException) {
+        rethrow;
+      }
       if (kDebugMode) debugPrint('❌ Full sync error: $e');
     }
   }
@@ -522,7 +858,23 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     try {
       final prefs = await SharedPreferences.getInstance();
       final queueRaw = prefs.getString('offline_sync_queue') ?? '[]';
-      final List<dynamic> queue = json.decode(queueRaw);
+      
+      // Validate JSON before parsing
+      List<dynamic> queue;
+      try {
+        final decoded = json.decode(queueRaw);
+        if (decoded is List) {
+          queue = decoded;
+        } else {
+          if (kDebugMode) debugPrint('❌ Invalid sync queue format, expected List');
+          return;
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('❌ JSON parsing error for sync queue: $e');
+        // Reset corrupted queue
+        await prefs.setString('offline_sync_queue', '[]');
+        return;
+      }
       
       if (queue.isEmpty) {
         if (kDebugMode) debugPrint('✅ No pending sync queue items');
@@ -533,12 +885,21 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       
       final token = await SecureTokenStorage.getToken();
       final List<int> syncedIndices = [];
+      final Map<int, int> retryCount = {}; // Track retry count per item
       
       for (int i = 0; i < queue.length; i++) {
         final item = queue[i];
         if (item['synced'] == true) continue;
         
+        final currentRetries = retryCount[i] ?? 0;
+        if (currentRetries >= 3) {
+          if (kDebugMode) debugPrint('❌ Item $i exceeded max retries, skipping');
+          continue;
+        }
+        
         try {
+          bool syncSuccess = false;
+          
           if (item['action'] == 'save_customer') {
             final response = await ApiClient.postJson(
               ApiClient.customersPrefix,
@@ -547,7 +908,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             ).timeout(const Duration(seconds: 10));
             
             if (response.statusCode == 200 || response.statusCode == 201) {
-              syncedIndices.add(i);
+              syncSuccess = true;
               if (kDebugMode) debugPrint('✅ Synced queued: Customer');
             }
           } else if (item['action'] == 'save_sale') {
@@ -558,16 +919,24 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             ).timeout(const Duration(seconds: 10));
             
             if (response.statusCode == 200 || response.statusCode == 201) {
-              syncedIndices.add(i);
+              syncSuccess = true;
               if (kDebugMode) debugPrint('✅ Synced queued: Sale');
             }
           }
+          
+          if (syncSuccess) {
+            syncedIndices.add(i);
+          } else {
+            retryCount[i] = currentRetries + 1;
+            if (kDebugMode) debugPrint('⚠️ Sync failed for item $i, retry ${retryCount[i]}/3');
+          }
         } catch (e) {
-          if (kDebugMode) debugPrint('⚠️ Failed to sync queued item: $e');
+          retryCount[i] = currentRetries + 1;
+          if (kDebugMode) debugPrint('⚠️ Failed to sync queued item $i: $e (retry ${retryCount[i]}/3)');
         }
       }
       
-      // Remove synced items
+      // Only remove successfully synced items
       for (final idx in syncedIndices.reversed) {
         queue.removeAt(idx);
       }
@@ -583,12 +952,25 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<void> _syncSalesData() async {
     try {
+      // Check network availability first
+      final connectivityResult = await Connectivity().checkConnectivity();
+      if (connectivityResult == ConnectivityResult.none) {
+        if (kDebugMode) debugPrint('🌐 No network available, skipping sales sync');
+        return;
+      }
+      
       final response = await ApiClient.getJson('/api/invoices');
       if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data is List) {
-          await LocalStorageService.saveSales(data);
-          if (kDebugMode) debugPrint('✅ Synced ${data.length} sales');
+        try {
+          final data = json.decode(response.body);
+          if (data is List && data.every((item) => item is Map)) {
+            await LocalStorageService.saveSales(data);
+            if (kDebugMode) debugPrint('✅ Synced ${data.length} sales');
+          } else {
+            if (kDebugMode) debugPrint('❌ Invalid sales data format from server');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('❌ JSON parsing error for sales data: $e');
         }
       }
     } catch (e) {
@@ -598,14 +980,27 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<void> _syncInventoryData() async {
     try {
+      // Check network availability first
+      final connectivityResult = await Connectivity().checkConnectivity();
+      if (connectivityResult == ConnectivityResult.none) {
+        if (kDebugMode) debugPrint('🌐 No network available, skipping inventory sync');
+        return;
+      }
+      
       final response = await ApiClient.getJson('/api/products');
       if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data is List) {
-          await LocalStorageService.saveBackendProducts(
-            List<Map<String, dynamic>>.from(data),
-          );
-          if (kDebugMode) debugPrint('✅ Synced ${data.length} products');
+        try {
+          final data = json.decode(response.body);
+          if (data is List && data.every((item) => item is Map)) {
+            await LocalStorageService.saveBackendProducts(
+              List<Map<String, dynamic>>.from(data),
+            );
+            if (kDebugMode) debugPrint('✅ Synced ${data.length} products');
+          } else {
+            if (kDebugMode) debugPrint('❌ Invalid inventory data format from server');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('❌ JSON parsing error for inventory data: $e');
         }
       }
     } catch (e) {
@@ -615,12 +1010,25 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   Future<void> _syncCustomerData() async {
     try {
+      // Check network availability first
+      final connectivityResult = await Connectivity().checkConnectivity();
+      if (connectivityResult == ConnectivityResult.none) {
+        if (kDebugMode) debugPrint('🌐 No network available, skipping customer sync');
+        return;
+      }
+      
       final response = await ApiClient.getJson(ApiClient.customersPrefix);
       if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data is List) {
-          await LocalStorageService.saveLocalCustomers(data);
-          if (kDebugMode) debugPrint('✅ Synced ${data.length} customers');
+        try {
+          final data = json.decode(response.body);
+          if (data is List && data.every((item) => item is Map)) {
+            await LocalStorageService.saveLocalCustomers(data);
+            if (kDebugMode) debugPrint('✅ Synced ${data.length} customers');
+          } else {
+            if (kDebugMode) debugPrint('❌ Invalid customer data format from server');
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('❌ JSON parsing error for customer data: $e');
         }
       }
     } catch (e) {

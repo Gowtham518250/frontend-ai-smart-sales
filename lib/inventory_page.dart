@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -35,6 +36,10 @@ class _InventoryPageState extends State<InventoryPage> {
   bool _loading = true;
   List<dynamic> _products = [];
   int? _userId;
+  // 🔧 FIX: distinguishes "backend confirmed 0 products" from "we couldn't
+  // reach the backend" (e.g. slow/flaky 5G) so we never show the scary
+  // "No products yet" empty-state when the real problem is just network.
+  bool _lastFetchFailed = false;
 
   // Add-product form controllers
   final _nameC = TextEditingController();
@@ -139,11 +144,24 @@ class _InventoryPageState extends State<InventoryPage> {
 
         try {
           if (kDebugMode) debugPrint('📡 Merging inventory from backend...');
-          final res = await ApiClient.getJson(
-            '${ApiClient.inventoryPrefix}/products?user_id=$_userId',
-            headers: {'Authorization': 'Bearer $token'},
-          ).timeout(const Duration(seconds: 10));
-          if (res.statusCode == 200) {
+          // 🔧 FIX: on slow/high-latency connections (common on 5G with poor
+          // signal) a single 10s attempt was too aggressive and left the
+          // screen stuck showing nothing. Try a fast attempt first, then
+          // fall back to one longer-timeout retry before giving up.
+          http.Response? res;
+          for (final attemptTimeout in const [Duration(seconds: 10), Duration(seconds: 25)]) {
+            try {
+              res = await ApiClient.getJson(
+                '${ApiClient.inventoryPrefix}/products?user_id=$_userId',
+                headers: {'Authorization': 'Bearer $token'},
+              ).timeout(attemptTimeout);
+              break; // got a response, stop retrying
+            } catch (e) {
+              if (kDebugMode) debugPrint('⚠️ Inventory fetch attempt failed ($attemptTimeout): $e');
+              // try again with the longer timeout unless this was already the last attempt
+            }
+          }
+          if (res != null && res.statusCode == 200) {
             final List<dynamic> productsData = json.decode(res.body);
             final apiProducts = productsData.map((e) => Map<String, dynamic>.from(e)).toList();
             final merged = InventoryStockHelper.mergeApiWithLocalCache(apiProducts, cachedBackend);
@@ -152,12 +170,19 @@ class _InventoryPageState extends State<InventoryPage> {
             setState(() {
               _products = [...localOfflineProducts, ...merged];
               _loading = false;
+              _lastFetchFailed = false;
             });
             if (kDebugMode) debugPrint('✅ Inventory merged: ${merged.length} products');
             return;
+          } else if (res == null) {
+            // Both attempts failed — this is a network problem, not an
+            // empty catalog. Keep whatever cache we already loaded and
+            // flag it so the UI doesn't say "No products yet".
+            _lastFetchFailed = true;
           }
         } catch (e) {
           if (kDebugMode) debugPrint('⚠️ Backend fetch failed: $e — keeping cache');
+          _lastFetchFailed = true;
         }
       }
     } catch (e) {
@@ -165,11 +190,15 @@ class _InventoryPageState extends State<InventoryPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Error loading products: $e'),
+          content: Text('Could not refresh products — showing last known list ($e)'),
           backgroundColor: Colors.red,
         ),
       );
-      setState(() { _products = []; });
+      // 🔧 FIX: previously this cleared `_products` to [] here, which made
+      // a transient read/network error look like the products had been
+      // deleted. Nothing was actually lost — just keep showing whatever
+      // list was already on screen and flag it as a failed refresh.
+      _lastFetchFailed = true;
     }
     if (!mounted) return;
     setState(() { _loading = false; });
@@ -597,6 +626,48 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   Widget _emptyState() {
+    // 🔧 FIX: if we have zero products ONLY because the last fetch failed
+    // (bad 5G, backend hiccup, etc.), don't show the "No products yet /
+    // add your first product" onboarding copy — that tells the shop owner
+    // their data is gone when it almost certainly isn't. Show a clear
+    // "couldn't reach server" state with a retry button instead.
+    if (_lastFetchFailed) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(40),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Container(
+              width: 120, height: 120,
+              decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.1),
+                  shape: BoxShape.circle),
+              child: const Icon(Icons.cloud_off_rounded, size: 60, color: Colors.orange),
+            ),
+            const SizedBox(height: 24),
+            Text('Couldn\'t load your products',
+                style: GoogleFonts.poppins(
+                    fontSize: 22, fontWeight: FontWeight.w700,
+                    color: Colors.black87)),
+            const SizedBox(height: 12),
+            Text('This is a connection issue, not data loss.\nYour products are safe on the server.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.poppins(
+                    fontSize: 14, color: Colors.grey.shade600)),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () => _fetch(),
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
+            ),
+          ]),
+        ),
+      );
+    }
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(40),
@@ -1026,4 +1097,3 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 }
-

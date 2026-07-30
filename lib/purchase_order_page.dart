@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'api_client.dart';
 import 'local_storage_service.dart';
 import 'secure_token_storage.dart';
+import 'sync_queue_manager.dart';
+import 'sync_service.dart';
 
 class PurchaseOrderPage extends StatefulWidget {
   const PurchaseOrderPage({super.key});
@@ -54,6 +57,13 @@ class _PurchaseOrderPageState extends State<PurchaseOrderPage> {
     orders.insert(0, order);
     await LocalStorageService.savePurchaseOrders(orders);
     setState(() => _orders = List<dynamic>.from(orders));
+
+    // 🔧 FIX: previously nothing here ever told the backend a purchase
+    // order was created — it only ever lived in local (on-device) storage.
+    // Enqueue it on the same durable, auto-retrying sync queue used for
+    // sales, so it reaches the server even if we're offline right now.
+    await SyncQueueManager.enqueue('create_purchase_order', order);
+    unawaited(SyncService.processQueueSafe());
   }
 
   /// Mark purchase order as received and update inventory stock
@@ -91,6 +101,18 @@ class _PurchaseOrderPageState extends State<PurchaseOrderPage> {
         orders[idx] = order;
         await LocalStorageService.savePurchaseOrders(orders);
       }
+
+      // 🔧 FIX: marking an order received previously only updated local
+      // storage — the backend never learned about it, so purchase orders
+      // stayed "PENDING" server-side forever. Enqueue the status change
+      // the same durable way sales updates are enqueued.
+      await SyncQueueManager.enqueue('receive_purchase_order', {
+        'order_id': order['id'],
+        'status': 'RECEIVED',
+        'received_at': order['received_at'],
+        'items': order['items'],
+      });
+      unawaited(SyncService.processQueueSafe());
       
       if (mounted) {
         await _loadOrders();

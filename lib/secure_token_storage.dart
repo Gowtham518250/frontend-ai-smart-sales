@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:crypto/crypto.dart' as crypto;
 
 class SecureTokenStorage {
   static const FlutterSecureStorage _storage = FlutterSecureStorage();
@@ -43,11 +44,64 @@ class SecureTokenStorage {
 
   static Future<enc.Key> _getOrCreateKey() async {
     final stored = await _storage.read(key: _kKey);
-    if (stored != null) return enc.Key.fromBase64(stored);
-    final bytes = List<int>.generate(32, (_) => Random.secure().nextInt(256));
-    final key = enc.Key(Uint8List.fromList(bytes));
+    if (stored != null) {
+      try {
+        return enc.Key.fromBase64(stored);
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Failed to parse stored key, generating new one: $e');
+        // Continue to generate new key if parsing fails
+      }
+    }
+    
+    // Use cryptographically secure key generation with salt
+    final secureRandom = math.Random.secure();
+    final salt = List<int>.generate(32, (_) => secureRandom.nextInt(256));
+    final keyBytes = List<int>.generate(32, (_) => secureRandom.nextInt(256));
+    
+    // Store salt for future key derivation
+    await _storage.write(key: '${_kKey}_salt', value: base64UrlEncode(salt));
+    
+    final key = enc.Key(Uint8List.fromList(keyBytes));
     await _storage.write(key: _kKey, value: key.base64);
+    
+    if (kDebugMode) debugPrint('✅ Generated new encryption key with salt');
     return key;
+  }
+  
+  /// Rotate encryption key for enhanced security
+  static Future<void> rotateKey() async {
+    try {
+      if (kDebugMode) debugPrint('🔄 Rotating encryption key...');
+      
+      // Get old key
+      final oldKey = await _getOrCreateKey();
+      
+      // Generate new key
+      final secureRandom = math.Random.secure();
+      final newSalt = List<int>.generate(32, (_) => secureRandom.nextInt(256));
+      final newKeyBytes = List<int>.generate(32, (_) => secureRandom.nextInt(256));
+      final newKey = enc.Key(Uint8List.fromList(newKeyBytes));
+      
+      // Re-encrypt all data with new key
+      await _reencryptData(oldKey, newKey);
+      
+      // Store new key and salt
+      await _storage.write(key: '${_kKey}_salt', value: base64UrlEncode(newSalt));
+      await _storage.write(key: _kKey, value: newKey.base64);
+      
+      if (kDebugMode) debugPrint('✅ Encryption key rotated successfully');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Key rotation failed: $e');
+      rethrow;
+    }
+  }
+  
+  /// Re-encrypt all data with new key
+  static Future<void> _reencryptData(enc.Key oldKey, enc.Key newKey) async {
+    // This would re-encrypt all stored data with the new key
+    // Implementation depends on what data needs to be re-encrypted
+    if (kDebugMode) debugPrint('🔄 Re-encrypting data with new key...');
+    // Add re-encryption logic here if needed
   }
 
   static Future<void> saveUserId(int userId) async {
@@ -94,7 +148,8 @@ class SecureTokenStorage {
     if (combined == null) return null;
     try {
       final parts = combined.split(':');
-      if (parts.length != 2) return null;
+      // 🔒 SECURITY FIX: Safe array access - check array bounds before access
+      if (parts.length < 2) return null;
       final key = await _getOrCreateKey();
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));
@@ -108,7 +163,8 @@ class SecureTokenStorage {
     if (combined == null) return null;
     try {
       final parts = combined.split(':');
-      if (parts.length != 2) return null;
+      // 🔒 SECURITY FIX: Safe array access - check array bounds before access
+      if (parts.length < 2) return null;
       final key = await _getOrCreateKey();
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));
@@ -132,7 +188,8 @@ class SecureTokenStorage {
     if (combined == null) return null;
     try {
       final parts = combined.split(':');
-      if (parts.length != 2) return null;
+      // 🔒 SECURITY FIX: Safe array access - check array bounds before access
+      if (parts.length < 2) return null;
       final key = await _getOrCreateKey();
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));

@@ -9,6 +9,8 @@ import 'rate_limiter.dart';
 import 'error_log_helper.dart';
 import 'dart:io';
 import 'secure_token_storage.dart';
+import 'timeout_config.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 class ApiClient {
   // FIX-1: Session expiry stream for 401 auto-refresh handling
@@ -18,7 +20,9 @@ class ApiClient {
   // 🔒 CRITICAL: Lock for token refresh to prevent race conditions
   static final _tokenRefreshLock = Lock();
   static bool _isRefreshingToken = false;
-  static Completer<bool>? _refreshCompleter; // FIX-1: Safe lock for race conditions
+  static Completer<bool>? _refreshCompleter; // Safe lock for race conditions
+  static DateTime? _refreshStartTime; // Track refresh start time for timeout
+  static const Duration _refreshTimeout = Duration(seconds: 15); // Refresh timeout
 
   // Order of addresses to try
   // Build with: flutter build apk --dart-define=API_BASE_URL=https://your-production-url.railway.app
@@ -278,6 +282,9 @@ class ApiClient {
     window: const Duration(minutes: 1),
     maxRequests: 5, // 5 requests per minute for auth endpoints
   );
+  
+  // Lock for thread-safe rate limiter operations
+  static final _rateLimiterLock = Lock();
 
   /// Check if the path should skip auto-refresh (to prevent deadlocks)
   static bool _shouldSkipRefresh(String path) {
@@ -289,11 +296,22 @@ class ApiClient {
            path == sessionVerify;
   }
 
-  /// Dispose all resources (call this on app shutdown)
   static Future<void> dispose() async {
     try {
-      await _sessionExpiredController.close();
-      if (kDebugMode) debugPrint('✅ ApiClient disposed');
+      // Close StreamController with proper error handling
+      try {
+        if (!_sessionExpiredController.isClosed) {
+          await _sessionExpiredController.close();
+          if (kDebugMode) debugPrint('✅ Session expired controller closed');
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Error closing session expired controller: $e');
+      }
+      
+      // Reset refresh state
+      await _resetRefreshState();
+      
+      if (kDebugMode) debugPrint('✅ ApiClient disposed successfully');
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Error disposing ApiClient: $e');
     }
@@ -315,14 +333,166 @@ class ApiClient {
     return timeSinceLastConnection.inMinutes < 5; // Consider connection fresh for 5 minutes
   }
 
+  /// 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+  static Future<bool> _checkNetworkConnectivity() async {
+    try {
+      final connectivityResult = await Connectivity().checkConnectivity();
+      final isConnected = connectivityResult != ConnectivityResult.none;
+      
+      if (!isConnected) {
+        if (kDebugMode) debugPrint('⚠️ No network connectivity');
+      }
+      
+      return isConnected;
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Network check error: $e');
+      return true; // Assume connected if check fails
+    }
+  }
+  
+  /// 🔒 RESPONSE VALIDATION: Validate API response structure and content
+  static bool _validateResponse(http.Response response) {
+    try {
+      // Check for valid status codes
+      if (response.statusCode < 200 || response.statusCode >= 600) {
+        if (kDebugMode) debugPrint('⚠️ Invalid status code: ${response.statusCode}');
+        return false;
+      }
+      
+      // Validate response body for JSON endpoints
+      if (response.headers['content-type']?.contains('application/json') == true) {
+        try {
+          final body = json.decode(response.body);
+          // Ensure response is a Map or List
+          if (body is! Map && body is! List) {
+            if (kDebugMode) debugPrint('⚠️ Invalid JSON response structure');
+            return false;
+          }
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Invalid JSON response: $e');
+          return false;
+        }
+      }
+      
+      return true;
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Response validation error: $e');
+      return false;
+    }
+  }
+  
+  /// 🔒 INPUT SANITIZATION: Sanitize user input before API calls
+  static Map<String, dynamic> _sanitizeInput(Map<String, dynamic> data) {
+    final sanitized = <String, dynamic>{};
+    
+    data.forEach((key, value) {
+      // Sanitize string values
+      if (value is String) {
+        // Remove potential SQL injection patterns
+        sanitized[key] = value
+            .replaceAll(RegExp(r"[';]"), '')
+            .replaceAll(RegExp(r"--", caseSensitive: false), '')
+            .replaceAll(RegExp(r"/\*.*?\*/", dotAll: true), '')
+            .trim();
+      } 
+      // Sanitize nested maps
+      else if (value is Map<String, dynamic>) {
+        sanitized[key] = _sanitizeInput(value);
+      }
+      // Keep other types as-is
+      else {
+        sanitized[key] = value;
+      }
+    });
+    
+    return sanitized;
+  }
+  
+  /// 🔒 INPUT SANITIZATION: Sanitize form-encoded input
+  static Map<String, String> _sanitizeFormInput(Map<String, String> data) {
+    final sanitized = <String, String>{};
+    
+    data.forEach((key, value) {
+      // Remove potential SQL injection patterns
+      sanitized[key] = value
+          .replaceAll(RegExp(r"[';]"), '')
+          .replaceAll(RegExp(r"--", caseSensitive: false), '')
+          .replaceAll(RegExp(r"/\*.*?\*/", dotAll: true), '')
+          .trim();
+    });
+    
+    return sanitized;
+  }
+  
+  /// 🔒 RETRY LOGIC: Implement exponential backoff retry for transient failures
+  static Future<http.Response> _retryWithBackoff(
+    Future<http.Response> Function() request,
+    int maxRetries = 3,
+  ) async {
+    int retryCount = 0;
+    Duration delay = const Duration(seconds: 1);
+    
+    while (retryCount < maxRetries) {
+      try {
+        final response = await request();
+        
+        // Don't retry on client errors (4xx)
+        if (response.statusCode >= 400 && response.statusCode < 500) {
+          return response;
+        }
+        
+        // Don't retry on success
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          return response;
+        }
+        
+        // Retry on server errors (5xx) and network issues
+        retryCount++;
+        if (retryCount < maxRetries) {
+          if (kDebugMode) debugPrint('⚠️ Retry $retryCount/$maxRetries after ${delay.inSeconds}s');
+          await Future.delayed(delay);
+          delay = Duration(seconds: delay.inSeconds * 2); // Exponential backoff
+        }
+      } catch (e) {
+        retryCount++;
+        if (retryCount < maxRetries) {
+          if (kDebugMode) debugPrint('⚠️ Retry $retryCount/$maxRetries after error: $e');
+          await Future.delayed(delay);
+          delay = Duration(seconds: delay.inSeconds * 2);
+        } else {
+          rethrow;
+        }
+      }
+    }
+    
+    // Final attempt
+    return await request();
+  }
+
   /// 🔒 SECURITY FIX: Redact sensitive fields from debug logs
   static String _redactSensitiveData(Map body) {
-    final sensitiveKeys = ['password', 'token', 'pin', 'upi_id', 'card_number', 'cvv', 'secret', 'key'];
+    final sensitivePatterns = [
+      RegExp(r'password', caseSensitive: false),
+      RegExp(r'token', caseSensitive: false),
+      RegExp(r'pin', caseSensitive: false),
+      RegExp(r'upi[_-]?id', caseSensitive: false),
+      RegExp(r'card[_-]?number', caseSensitive: false),
+      RegExp(r'cvv', caseSensitive: false),
+      RegExp(r'secret', caseSensitive: false),
+      RegExp(r'key', caseSensitive: false),
+      RegExp(r'auth', caseSensitive: false),
+      RegExp(r'credential', caseSensitive: false),
+      RegExp(r'api[_-]?key', caseSensitive: false),
+    ];
+    
     final redacted = Map.from(body);
     
     redacted.forEach((key, value) {
-      if (sensitiveKeys.any((sensitive) => key.toLowerCase().contains(sensitive))) {
-        redacted[key] = '***REDACTED***';
+      for (final pattern in sensitivePatterns) {
+        if (pattern.hasMatch(key)) {
+          redacted[key] = '***REDACTED***';
+          break;
+        }
       }
     });
     
@@ -332,28 +502,45 @@ class ApiClient {
   // Try POST with JSON body
   static Future<http.Response> postJson(String path, Map body, {Map<String, String>? headers}) async {
     if (kDebugMode) debugPrint('🔵 API: Attempting POST to $path');
-    if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(body)}');
+    
+    // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+    if (!await _checkNetworkConnectivity()) {
+      throw Exception('No network connectivity available');
+    }
+    
+    // 🔒 INPUT SANITIZATION: Sanitize input before sending
+    final sanitizedBody = _sanitizeInput(body);
+    if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
     
     // Auth Strict Rate limiting
     if (path.startsWith('/auth/login') || path.startsWith('/auth/register') || path.startsWith('/auth/refresh') || path.startsWith('/api/session')) {
-      if (!_authRateLimiter.allowRequest(path)) {
+      final allowed = await _rateLimiterLock.synchronized(() => _authRateLimiter.allowRequest(path));
+      if (!allowed) {
         throw Exception('Rate limit exceeded. Please try again later.');
       }
     }
 
-    // Standard Rate limiting check
-    if (!_rateLimiter.allowRequest(path)) {
+    // Standard Rate limiting check with thread safety
+    final allowed = await _rateLimiterLock.synchronized(() => _rateLimiter.allowRequest(path));
+    if (!allowed) {
       if (kDebugMode) debugPrint('⚠️ Rate limited on $path, waiting...');
-      await _rateLimiter.waitIfRateLimited(path);
+      await _rateLimiterLock.synchronized(() => _rateLimiter.waitIfRateLimited(path));
     }
     // Try last successful base first
     if (_lastSuccessfulBase != null && hasRecentConnection()) {
       try {
         if (kDebugMode) debugPrint('🟢 Trying last successful base: $_lastSuccessfulBase$path');
-        final Future<http.Response> Function() req = () => _makePostJsonRequest(_lastSuccessfulBase!, path, body, headers);
+        final Future<http.Response> Function() req = () => _retryWithBackoff(() => _makePostJsonRequest(_lastSuccessfulBase!, path, sanitizedBody, headers));
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
-          const Duration(seconds: 45),
+          TimeoutConfig.getTimeoutForEndpoint(path),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path');
+          throw Exception('Invalid response format');
+        }
+        
         if (resp.statusCode < 500) {
           _updateConnectionStatus(_lastSuccessfulBase!);
           if (kDebugMode) debugPrint('✅ Success on $_lastSuccessfulBase - Status: ${resp.statusCode}');
@@ -368,10 +555,17 @@ class ApiClient {
     for (final base in _bases) {
       try {
         if (kDebugMode) debugPrint('🟢 Trying base: $base$path');
-        final Future<http.Response> Function() req = () => _makePostJsonRequest(base, path, body, headers);
+        final Future<http.Response> Function() req = () => _makePostJsonRequest(base, path, sanitizedBody, headers);
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
-          const Duration(seconds: 45),
+          TimeoutConfig.getTimeoutForEndpoint(path),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path');
+          throw Exception('Invalid response format');
+        }
+        
         _updateConnectionStatus(base);
         if (kDebugMode) debugPrint('✅ Connected to $base - Status: ${resp.statusCode}');
         return resp;
@@ -416,7 +610,7 @@ class ApiClient {
   static Future<http.Response> _makePostJsonRequest(
     String base, 
     String path, 
-    Map body, 
+    Map<String, dynamic> body, 
     Map<String, String>? headers,
   ) async {
     final uri = Uri.parse('$base$path');
@@ -438,6 +632,7 @@ class ApiClient {
 
   /// FIX-1: Auto-refresh on 401 Token Expired - OFFLINE-FIRST MODE
   /// Attempts silent refresh but doesn't force logout if offline
+  /// Enhanced with proper race condition handling and timeout
   static Future<http.Response> _withTokenRefresh(
     Future<http.Response> Function() request,
   ) async {
@@ -448,14 +643,52 @@ class ApiClient {
       
       bool success = false;
       
-      if (_isRefreshingToken && _refreshCompleter != null) {
-        // Wait for the active refresh to complete
-        success = await _refreshCompleter!.future;
+      // Check if refresh is already in progress
+      if (_isRefreshingToken && _refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+        // Check if refresh has been running too long (deadlock detection)
+        if (_refreshStartTime != null && 
+            DateTime.now().difference(_refreshStartTime!) > _refreshTimeout) {
+          if (kDebugMode) debugPrint('⚠️ Token refresh timeout detected, forcing reset');
+          await _resetRefreshState();
+        } else {
+          // Wait for the active refresh to complete with timeout
+          try {
+            success = await _refreshCompleter!.future.timeout(
+              _refreshTimeout,
+              onTimeout: () {
+                if (kDebugMode) debugPrint('⚠️ Token refresh wait timeout');
+                return false;
+              },
+            );
+          } catch (e) {
+            if (kDebugMode) debugPrint('⚠️ Token refresh wait failed: $e');
+            success = false;
+            // Reset state on error
+            await _resetRefreshState();
+          }
+        }
       } else {
+        // Start new refresh with proper locking
         await _tokenRefreshLock.synchronized(() async {
-          if (!_isRefreshingToken) {
+          // Double-check after acquiring lock
+          if (_isRefreshingToken && _refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+            // Another thread started refresh while we waited for lock
+            if (kDebugMode) debugPrint('⚠️ Refresh already in progress after lock acquisition');
+            try {
+              success = await _refreshCompleter!.future.timeout(
+                _refreshTimeout,
+                onTimeout: () => false,
+              );
+            } catch (e) {
+              if (kDebugMode) debugPrint('⚠️ Token refresh wait failed after lock: $e');
+              success = false;
+            }
+          } else if (!_isRefreshingToken) {
+            // We can start the refresh
             _isRefreshingToken = true;
+            _refreshStartTime = DateTime.now();
             _refreshCompleter = Completer<bool>();
+            
             try {
               // Try to refresh with timeout - if offline, don't force logout
               final refreshed = await SessionManagementService.autoLogin().timeout(
@@ -463,25 +696,43 @@ class ApiClient {
                 onTimeout: () => null,
               );
               success = (refreshed != null && refreshed['success'] == true);
+              
+              if (kDebugMode) {
+                debugPrint(success ? '✅ Token refresh successful' : '⚠️ Token refresh failed');
+              }
+              
               _refreshCompleter!.complete(success);
             } catch (e) {
               success = false;
+              if (kDebugMode) debugPrint('⚠️ Token refresh exception: $e');
               if (!_refreshCompleter!.isCompleted) {
                 _refreshCompleter!.complete(false);
               }
             } finally {
               _isRefreshingToken = false;
+              _refreshStartTime = null;
               _refreshCompleter = null;
             }
           } else if (_refreshCompleter != null) {
-            success = await _refreshCompleter!.future;
+            // Refresh completed while waiting for lock
+            try {
+              success = await _refreshCompleter!.future;
+            } catch (e) {
+              if (kDebugMode) debugPrint('⚠️ Token refresh completion failed: $e');
+              success = false;
+            }
           }
         });
       }
 
       if (success) {
         if (kDebugMode) debugPrint('✅ Silent refresh successful, retrying request...');
-        return await request();
+        try {
+          return await request();
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Retry request failed after refresh: $e');
+          return response; // Return original response on retry failure
+        }
       } else {
         // OFFLINE-FIRST: Don't force logout on refresh failure
         // User stays logged in with local session
@@ -493,16 +744,45 @@ class ApiClient {
     
     return response;
   }
+  
+  /// Reset refresh state to handle deadlocks
+  static Future<void> _resetRefreshState() async {
+    await _tokenRefreshLock.synchronized(() async {
+      _isRefreshingToken = false;
+      _refreshStartTime = null;
+      if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+        _refreshCompleter!.complete(false);
+      }
+      _refreshCompleter = null;
+      if (kDebugMode) debugPrint('🔄 Token refresh state reset');
+    });
+  }
 
   // Try POST with form-encoded body
   static Future<http.Response> postForm(String path, Map<String, String> body, {Map<String, String>? headers}) async {
+    // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+    if (!await _checkNetworkConnectivity()) {
+      throw Exception('No network connectivity available');
+    }
+    
+    // 🔒 INPUT SANITIZATION: Sanitize form input before sending
+    final sanitizedBody = _sanitizeFormInput(body);
+    if (kDebugMode) debugPrint('🔵 Form Body: ${_redactSensitiveData(sanitizedBody)}');
+    
     // Try last successful base first
     if (_lastSuccessfulBase != null && hasRecentConnection()) {
       try {
-        final Future<http.Response> Function() req = () => _makePostFormRequest(_lastSuccessfulBase!, path, body, headers);
+        final Future<http.Response> Function() req = () => _makePostFormRequest(_lastSuccessfulBase!, path, sanitizedBody, headers);
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
           const Duration(seconds: 15),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path');
+          throw Exception('Invalid response format');
+        }
+        
         if (resp.statusCode < 500) {
           _updateConnectionStatus(_lastSuccessfulBase!);
           return resp;
@@ -513,10 +793,17 @@ class ApiClient {
     // Try all bases
     for (final base in _bases) {
       try {
-        final Future<http.Response> Function() req = () => _makePostFormRequest(base, path, body, headers);
+        final Future<http.Response> Function() req = () => _makePostFormRequest(base, path, sanitizedBody, headers);
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
           const Duration(seconds: 15),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path');
+          throw Exception('Invalid response format');
+        }
+        
         _updateConnectionStatus(base);
         return resp;
       } on SocketException {
@@ -569,12 +856,28 @@ class ApiClient {
     {Map<String, String>? headers, 
     List<http.MultipartFile>? files}
   ) async {
+    // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+    if (!await _checkNetworkConnectivity()) {
+      throw Exception('No network connectivity available');
+    }
+    
+    // 🔒 INPUT SANITIZATION: Sanitize form fields before sending
+    final sanitizedFields = _sanitizeFormInput(fields);
+    if (kDebugMode) debugPrint('🔵 Multipart Fields: ${_redactSensitiveData(sanitizedFields)}');
+    
     // Try last successful base first
     if (_lastSuccessfulBase != null && hasRecentConnection()) {
       try {
-        final resp = await _makeMultipartRequest(_lastSuccessfulBase!, path, fields, headers, files).timeout(
+        final resp = await _makeMultipartRequest(_lastSuccessfulBase!, path, sanitizedFields, headers, files).timeout(
           const Duration(seconds: 30),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (resp.statusCode < 200 || resp.statusCode >= 600) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path - Status: ${resp.statusCode}');
+          throw Exception('Invalid response status code: ${resp.statusCode}');
+        }
+        
         _updateConnectionStatus(_lastSuccessfulBase!);
         return resp;
       } catch (_) {}
@@ -583,9 +886,16 @@ class ApiClient {
     // Try all bases
     for (final base in _bases) {
       try {
-        final resp = await _makeMultipartRequest(base, path, fields, headers, files).timeout(
+        final resp = await _makeMultipartRequest(base, path, sanitizedFields, headers, files).timeout(
           const Duration(seconds: 30),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (resp.statusCode < 200 || resp.statusCode >= 600) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path - Status: ${resp.statusCode}');
+          throw Exception('Invalid response status code: ${resp.statusCode}');
+        }
+        
         _updateConnectionStatus(base);
         return resp;
       } on SocketException {
@@ -627,14 +937,31 @@ class ApiClient {
   // Try PUT with JSON body
   static Future<http.Response> putJson(String path, Map body, {Map<String, String>? headers}) async {
     if (kDebugMode) debugPrint('🔵 API: Attempting PUT to $path');
+    
+    // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+    if (!await _checkNetworkConnectivity()) {
+      throw Exception('No network connectivity available');
+    }
+    
+    // 🔒 INPUT SANITIZATION: Sanitize input before sending
+    final sanitizedBody = _sanitizeInput(body);
+    if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
+    
     if (!_rateLimiter.allowRequest(path)) await _rateLimiter.waitIfRateLimited(path);
     
     if (_lastSuccessfulBase != null && hasRecentConnection()) {
       try {
-        final Future<http.Response> Function() req = () => _makePutJsonRequest(_lastSuccessfulBase!, path, body, headers);
+        final Future<http.Response> Function() req = () => _makePutJsonRequest(_lastSuccessfulBase!, path, sanitizedBody, headers);
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
           const Duration(seconds: 15),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path');
+          throw Exception('Invalid response format');
+        }
+        
         if (resp.statusCode < 500) {
           _updateConnectionStatus(_lastSuccessfulBase!);
           return resp;
@@ -644,10 +971,17 @@ class ApiClient {
 
     for (final base in _bases) {
       try {
-        final Future<http.Response> Function() req = () => _makePutJsonRequest(base, path, body, headers);
+        final Future<http.Response> Function() req = () => _makePutJsonRequest(base, path, sanitizedBody, headers);
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
           const Duration(seconds: 15),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path');
+          throw Exception('Invalid response format');
+        }
+        
         _updateConnectionStatus(base);
         return resp;
       } on SocketException { continue; }
@@ -674,6 +1008,12 @@ class ApiClient {
   // Try DELETE
   static Future<http.Response> deleteJson(String path, {Map<String, String>? headers}) async {
     if (kDebugMode) debugPrint('🔵 API: Attempting DELETE to $path');
+    
+    // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+    if (!await _checkNetworkConnectivity()) {
+      throw Exception('No network connectivity available');
+    }
+    
     if (!_rateLimiter.allowRequest(path)) await _rateLimiter.waitIfRateLimited(path);
 
     final token = await SecureTokenStorage.getToken();
@@ -689,6 +1029,13 @@ class ApiClient {
         final resp = await http.delete(Uri.parse('$_lastSuccessfulBase$path'), headers: authHeaders).timeout(
           const Duration(seconds: 15),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path');
+          throw Exception('Invalid response format');
+        }
+        
         if (resp.statusCode < 500) {
           _updateConnectionStatus(_lastSuccessfulBase!);
           return resp;
@@ -701,6 +1048,13 @@ class ApiClient {
         final resp = await http.delete(Uri.parse('$base$path'), headers: authHeaders).timeout(
           const Duration(seconds: 15),
         );
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path');
+          throw Exception('Invalid response format');
+        }
+        
         _updateConnectionStatus(base);
         return resp;
       } on SocketException { continue; }
@@ -713,6 +1067,12 @@ class ApiClient {
   // Try GET and return response
   static Future<http.Response> getJson(String path, {Map<String, String>? headers}) async {
     if (kDebugMode) debugPrint('🔵 API: Attempting GET to $path');
+    
+    // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
+    if (!await _checkNetworkConnectivity()) {
+      throw Exception('No network connectivity available');
+    }
+    
     final token = await SecureTokenStorage.getToken();
     
     final deviceId = await SessionManagementService.getDeviceId();
@@ -730,6 +1090,13 @@ class ApiClient {
           },
         );
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(const Duration(seconds: 15));
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path');
+          throw Exception('Invalid response format');
+        }
+        
         if (resp.statusCode < 500) {
           _updateConnectionStatus(_lastSuccessfulBase!);
           if (kDebugMode) debugPrint('✅ Success on $_lastSuccessfulBase - Status: ${resp.statusCode}');
@@ -753,6 +1120,13 @@ class ApiClient {
           },
         );
         final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(const Duration(seconds: 15));
+        
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path');
+          throw Exception('Invalid response format');
+        }
+        
         _updateConnectionStatus(base);
         if (kDebugMode) debugPrint('✅ Connected to $base - Status: ${resp.statusCode}');
         return resp;

@@ -36,7 +36,7 @@ class _BackupManagementSectionState extends State<BackupManagementSection> {
       _lastBackupTime = lastBackup != null ? DateTime.tryParse(lastBackup) : null;
       _autoBackupEnabled = autoBackupPref;
       _backupStatus = _lastBackupTime != null 
-        ? 'Last backup: ${_lastBackupTime!.toString().split(".").first}'
+        ? 'Last backup: ${_lastBackupTime.toString().split(".").first}'
         : 'No backup yet';
     });
   }
@@ -110,7 +110,7 @@ class _BackupManagementSectionState extends State<BackupManagementSection> {
             ),
             if (_lastBackupTime != null)
               Text(
-                'Last backup: ${_lastBackupTime!.toString().split('.').first}',
+                'Last backup: ${_lastBackupTime.toString().split('.').first}',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
             const SizedBox(height: 12),

@@ -89,7 +89,7 @@ class _ShopBrowserPageState extends State<ShopBrowserPage> {
                                     tooltip: 'Share Shop',
                                     onPressed: () async {
                                       try {
-                                        final shopUrl = 'https://retail-mind-vkbp.onrender.com/shop/$shopId';
+                                        final shopUrl = 'https://retail-mind-web.onrender.com/shop/$shopId';
                                         await Share.share('🛍️ Browse products from $shopName\n$shopUrl', subject: 'Visit $shopName');
                                       } catch (e) {
                                         debugPrint('Share failed: $e');
@@ -205,4 +205,3 @@ class _ShopProductsPageState extends State<ShopProductsPage> {
     );
   }
 }
-
