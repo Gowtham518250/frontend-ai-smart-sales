@@ -64,8 +64,10 @@ class SaleService {
       };
     }
 
-    // 🚀 CRITICAL FIX: Validate stock availability before sale creation
-    final stockValidation = await _validateStockAvailability(items);
+    // 🔧 FIX: Skip live-API stock validation (it caused infinite spin after 2-3 sales
+    // by making per-item network calls that could hang). The backend already
+    // enforces stock limits during invoice sync — we do a fast local-only check here.
+    final stockValidation = await _validateStockAvailabilityLocally(items);
     if (!stockValidation['valid']) {
       return {
         'success': false,
@@ -322,6 +324,7 @@ class SaleService {
         } catch (queueError) {
           if (kDebugMode) debugPrint('⚠️ Failed to enqueue offline sale: $queueError');
           await ErrorLogHelper.logException(queueError, StackTrace.current, context: 'SaleService.submitSale:enqueue');
+          rethrow; // Added to prevent silent data loss
         }
 
         // Always deduct stock locally even when offline so inventory remains accurate
@@ -607,7 +610,64 @@ class SaleService {
     } catch (_) {}
   }
 
-  /// 🚀 CRITICAL FIX: Validate stock availability before sale creation
+  /// 🚀 FAST LOCAL-ONLY stock validation (reads from cache, no network call)
+  /// This prevents the infinite-spin bug that occurred when per-item API calls hung.
+  static Future<Map<String, dynamic>> _validateStockAvailabilityLocally(List<Map<String, dynamic>> items) async {
+    try {
+      final localProducts = await LocalStorageService.loadLocalProducts();
+      final productsList = localProducts is List ? localProducts as List : localProducts.values.toList();
+      final insufficientItems = <Map<String, dynamic>>[];
+
+      for (var item in items) {
+        final productId = int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0;
+        final qty = (item['qty'] is num ? (item['qty'] as num).toInt() : int.tryParse(item['qty']?.toString() ?? '1') ?? 1);
+        final itemName = (item['product_name'] ?? item['itemName'] ?? item['name'] ?? '').toString().toLowerCase();
+
+        if (productId > 0 || itemName.isNotEmpty) {
+          // Find the product in local cache
+          Map<String, dynamic>? found;
+          for (var p in productsList) {
+            final pIdRaw = (p['id'] ?? p['product_id'] ?? '').toString();
+            final pId = int.tryParse(pIdRaw) ?? 0;
+            final pName = (p['product_name'] ?? p['name'] ?? '').toString().toLowerCase();
+
+            if ((productId > 0 && pId == productId) || (itemName.isNotEmpty && pName == itemName)) {
+              found = Map<String, dynamic>.from(p as Map);
+              break;
+            }
+          }
+
+          if (found != null) {
+            final currentStock = (found['current_stock'] ?? found['stock'] ?? found['quantity'] ?? 9999) as num;
+            if (qty > currentStock.toInt()) {
+              insufficientItems.add({
+                'product_id': productId,
+                'product_name': found['product_name'] ?? found['name'] ?? itemName,
+                'requested_qty': qty,
+                'available_stock': currentStock.toInt(),
+              });
+            }
+          }
+          // If not found in cache → allow sale (backend will validate)
+        }
+      }
+
+      if (insufficientItems.isEmpty) {
+        return {'valid': true, 'message': 'Stock check passed'};
+      }
+      final productNames = insufficientItems.map((i) => i['product_name']).join(', ');
+      return {
+        'valid': false,
+        'message': 'Insufficient stock for: $productNames',
+        'insufficient_items': insufficientItems,
+      };
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Local stock validation error (allowing sale): $e');
+      return {'valid': true, 'message': 'Stock validation skipped'};
+    }
+  }
+
+  /// 🔒 BACKEND stock validation — only called in background; NOT in the main sale submit path.
   static Future<Map<String, dynamic>> _validateStockAvailability(List<Map<String, dynamic>> items) async {
     try {
       final insufficientItems = <Map<String, dynamic>>[];
@@ -678,7 +738,7 @@ class SaleService {
     // Deduplication before appending history
     if (!history.any((s) => s['sale_id'] == saleId)) {
       // 🛡️ ANONYMOUS VIP TRACKING: Assign Guest ID if no phone
-      final String safePhone = customerPhone.isNotEmpty ? customerPhone : 'GUEST_${saleId.substring(saleId.length - 6)}';
+      final String safePhone = customerPhone.isNotEmpty ? customerPhone : 'GUEST_${saleId.length >= 6 ? saleId.substring(saleId.length - 6) : saleId.padLeft(6, '0')}';
       
       final String saleTimestamp = DateTime.now().toUtc().toIso8601String();
       

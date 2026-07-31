@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'language_provider.dart';
 import 'models.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
+import 'worker_local_storage.dart';
 import 'worker_attendance_detail_page.dart';
 
 class AttendancePage extends StatefulWidget {
@@ -85,21 +86,13 @@ class _AttendancePageState extends State<AttendancePage>
   Future<void> _loadStaff() async {
     // Load staff from local storage first (immediate response)
     try {
-      // FIX: dashboard_page.dart writes this via ScopedSharedPreferences,
-      // which actually stores it under 'user_<id>_workers_json', not the
-      // literal 'workers_json' key. Reading the raw key here meant this
-      // local cache always missed, so on any slow/failed network this
-      // page had nothing to fall back to and showed no workers at all.
-      final workersJson = await ScopedSharedPreferences.getString('workers_json');
+      final workers = await WorkerLocalStorage.fetchWorkers(_userId ?? 0);
       
-      if (workersJson != null && workersJson.isNotEmpty) {
-        final data = json.decode(workersJson);
-        if (data is List && mounted) {
-          setState(() {
-            _staff = data.map((w) => Worker.fromJson(w)).toList();
-          });
-          if (kDebugMode) debugPrint('📦 Loaded ${_staff.length} workers from local storage');
-        }
+      if (workers.isNotEmpty && mounted) {
+        setState(() {
+          _staff = workers;
+        });
+        if (kDebugMode) debugPrint('📦 Loaded ${_staff.length} workers from local storage');
       }
     } catch (e) {
       if (kDebugMode) debugPrint('Error loading staff from local storage: $e');

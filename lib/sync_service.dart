@@ -481,7 +481,7 @@ class SyncService {
     try {
       await SyncQueueManager.enqueue('sync_sale', sale);
       _syncStatusController.add(await SyncQueueManager.getQueueSize());
-      processQueueSafe();
+      await processQueueSafe();
     } catch (e) {
       await ErrorLogHelper.logException(e, StackTrace.current, context: 'SyncService.syncSale');
     }
@@ -496,7 +496,7 @@ class SyncService {
         'paid_amount': amount,
       });
       _syncStatusController.add(await SyncQueueManager.getQueueSize());
-      processQueueSafe();
+      await processQueueSafe();
     } catch (e) {
       await ErrorLogHelper.logException(e, StackTrace.current, context: 'SyncService.updateSalePayment');
     }

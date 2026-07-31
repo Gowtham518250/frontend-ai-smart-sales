@@ -75,7 +75,7 @@ class PdfInvoiceService {
 
               // Items
               ...items.map((item) {
-                  final name = (item['product_name'] ?? item['description'] ?? item['name'] ?? item['product'] ?? 'Item').toString();
+                  final name = (item['product_name'] ?? item['description'] ?? item['name'] ?? item['item'] ?? item['product'] ?? 'Item').toString();
                   final qty = double.tryParse((item['qty']?.toString() ?? item['quantity']?.toString()) ?? '1') ?? 1.0;
                   final price = double.tryParse((item['price']?.toString() ?? item['unit_price']?.toString()) ?? '0') ?? 0.0;
                   final total = qty * price;

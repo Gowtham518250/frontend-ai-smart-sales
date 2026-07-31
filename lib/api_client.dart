@@ -14,7 +14,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 
 class ApiClient {
   // FIX-1: Session expiry stream for 401 auto-refresh handling
-  static final _sessionExpiredController = StreamController<bool>.broadcast();
+  static StreamController<bool> _sessionExpiredController = StreamController<bool>.broadcast();
   static Stream<bool> get onSessionExpired => _sessionExpiredController.stream;
 
   // 🔒 CRITICAL: Lock for token refresh to prevent race conditions
@@ -259,7 +259,7 @@ class ApiClient {
   static const String shopCreate = '/api/shop/create';
   static const String shopPublicProfile = '/shop/profile';
   static const String shopUpiQr = '/shop/upi-qr';
-  static const String shopToggleOnlineStore = '/shop/toggle-online-store';
+  static const String shopToggleOnlineStore = '/api/shop/toggle-online-store';
   static String shopPublicInfo(String shopId) => '/shop/public/$shopId';
 
   // Compatibility Aliases (to fix build errors in existing files)
@@ -302,7 +302,8 @@ class ApiClient {
       try {
         if (!_sessionExpiredController.isClosed) {
           await _sessionExpiredController.close();
-          if (kDebugMode) debugPrint('✅ Session expired controller closed');
+          _sessionExpiredController = StreamController<bool>.broadcast();
+          if (kDebugMode) debugPrint('✅ Session expired controller closed and reset');
         }
       } catch (e) {
         if (kDebugMode) debugPrint('⚠️ Error closing session expired controller: $e');

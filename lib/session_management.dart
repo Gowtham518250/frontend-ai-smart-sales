@@ -325,7 +325,7 @@ class SessionManagementService {
                 refreshToken: data['refresh_token'] ?? refreshToken,
                 accessToken: data['access_token'] ?? '',
                 deviceId: deviceId ?? 'flutter_app',
-                userId: data['user_id'] ?? 0,
+                userId: data['user_id'] ?? (await getCurrentUserId()) ?? 0,
                 userName: data['user_name'] ?? '',
                 userEmail: data['email'] ?? '',
               );
@@ -342,8 +342,12 @@ class SessionManagementService {
             }
             
             // Token expired or invalid
-            if (kDebugMode) debugPrint('⚠️ Token refresh failed: ${response.statusCode}');
-            await clearTokens();
+            if (response.statusCode == 401 || response.statusCode == 403) {
+              if (kDebugMode) debugPrint('⚠️ Token refresh failed with auth error: ${response.statusCode}');
+              await clearTokens();
+            } else {
+              if (kDebugMode) debugPrint('⚠️ Token refresh failed (non-auth error): ${response.statusCode}');
+            }
             return null;
           } catch (e) {
             if (kDebugMode) debugPrint('⚠️ Error calling refresh endpoint: $e');

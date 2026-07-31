@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -24,7 +25,6 @@ import 'ltv_analytics_service.dart';
 import 'session_management.dart';
 import 'scoped_shared_preferences.dart';
 import 'google_auth_service.dart';
-import 'sync_queue_manager.dart';
 import 'online_orders_listener.dart';
 import 'inventory_sync_service.dart';
 import 'sales_restore_service.dart';
@@ -132,7 +132,7 @@ class _DecentLoginPageState extends State<DecentLoginPage>
       final response = await ApiClient.postJson('/auth/login', {
         'email': emailController.text.trim(),  // Backend uses 'email' field
         'password': passwordController.text.trim(),
-      });
+      }).timeout(const Duration(seconds: 20));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -144,7 +144,6 @@ class _DecentLoginPageState extends State<DecentLoginPage>
         
         if (accessToken.isEmpty) {
           setState(() {
-            isLoading = false;
             errorMessage = 'Login failed: No access token received';
           });
           return;
@@ -165,7 +164,8 @@ class _DecentLoginPageState extends State<DecentLoginPage>
           }
         })();
 
-        if (kDebugMode) debugPrint('🧹 Clearing old user session data on new login...');
+        // 🔧 FIX: Clear old session data (does not clear business data like sales/products)
+        if (kDebugMode) debugPrint('🧹 Clearing old session data on new login...');
         await UserDataClearService.clearAllUserData();
 
         final deviceId = await SessionManagementService.getDeviceId();
@@ -194,90 +194,29 @@ class _DecentLoginPageState extends State<DecentLoginPage>
           debugPrint('   Role: $role');
           debugPrint('   User ID: $userId');
         }
-          
-          // 🔧 NEW LOGIN FLOW: Load local sales first, upload pending, then merge with backend
-          
-          // ✅ Always restore shop profile regardless of other restoration status
-          try {
-            if (kDebugMode) debugPrint('🏪 Restoring shop profile...');
-            final profileResult = await ShopProfilePersistenceService.restoreProfile();
-            if (profileResult['success']) {
-              if (kDebugMode) debugPrint('✅ Shop profile restored from ${profileResult['source']}');
-            } else {
-              if (kDebugMode) debugPrint('⚠️ Shop profile restoration failed: ${profileResult['error']}');
-              // Even if backend fails, try to load from local cache
-              final localProfile = await ShopProfilePersistenceService.loadProfileLocally();
-              if (localProfile != null) {
-                await ShopProfilePersistenceService.applyProfileToPrefs(localProfile);
-                if (kDebugMode) debugPrint('✅ Shop profile restored from local cache');
-              }
-            }
-          } catch (e) {
-            if (kDebugMode) debugPrint('⚠️ Shop profile restoration error: $e');
-          }
-          
-          try {
-            if (kDebugMode) debugPrint('🔄 Starting new login sync flow...');
-            
-            // Step 1: Load ALL local sales (already preserved through UserDataClearService)
-            final localSales = await LocalStorageService.loadSales();
-            if (kDebugMode) debugPrint('📦 Loaded ${localSales.length} local sales');
-            
-            // Step 2: Upload ALL pending offline sales
-            if (kDebugMode) debugPrint('Uploading pending offline sales...');
-            await SyncService.processQueueSafe();
-            if (kDebugMode) debugPrint('✅ Pending sales upload complete');
 
-            // Pull latest sales from GET /auth/sales (works when /api/invoices/* is broken)
-            await SyncService.downloadUserDataSafe();
-            if (kDebugMode) debugPrint('✅ Backend sales merged via downloadUserDataSafe');
-            
-            // Step 3: Merge with backend sales using SalesRestoreService (will merge, not overwrite)
-            if (kDebugMode) debugPrint('🔄 Merging with backend sales...');
-            final restorationResult = await SalesRestoreService.completeRestoration();
-            
-            if (restorationResult['success']) {
-              if (kDebugMode) {
-                debugPrint('✅ Merge with backend complete');
-                for (var step in restorationResult['steps_completed']) {
-                  debugPrint('   - $step');
-                }
-              }
-              await SalesRestoreService.markRestorationComplete();
-            } else {
-              if (kDebugMode) debugPrint('⚠️ Merge with backend failed: ${restorationResult['error']}');
-            }
-            
-            // Step 4: Refresh inventory from backend
-            if (kDebugMode) debugPrint('🔄 Refreshing inventory from backend...');
-            await InventorySyncService.refreshAllInventory();
-            await InventorySyncService.updateLastSyncTimestamp();
-            if (kDebugMode) debugPrint('✅ Inventory refreshed from backend');
-            
-          } catch (e) {
-            if (kDebugMode) debugPrint('⚠️ Login sync flow failed: $e');
-            // Continue to dashboard even if sync fails - local sales are preserved
-          }
-          
-          // Navigate based on user role and verification status
-          final normalizedRole = role.trim().toUpperCase();
-          if (normalizedRole == 'CUSTOMER') {
-            // Customers should go to customer verification page first
-            Navigator.of(context).pushReplacementNamed('/customer-verification');
-          } else {
-            // OWNER and WORKER roles go through role verification page
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(
-                builder: (ctx) => RoleSelectionPage(email: emailController.text.trim()),
-              ),
-            );
-          }
+        // 🔧 FIX: Navigate IMMEDIATELY — don't await heavy sync operations before showing dashboard
+        // Heavy sync (sales restore, inventory refresh) runs in background after navigation
+        if (!mounted) return;
+        final normalizedRole = role.trim().toUpperCase();
+        if (normalizedRole == 'CUSTOMER') {
+          Navigator.of(context).pushReplacementNamed('/customer-verification');
+        } else {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (ctx) => RoleSelectionPage(email: emailController.text.trim()),
+            ),
+          );
+        }
+
+        // 🔧 FIX: Run sync in background (fire-and-forget) so it doesn't block navigation
+        unawaited(_runPostLoginSyncInBackground(userId));
+
       } else {
         final errorData = json.decode(response.body);
         final detail = errorData['detail'] ?? 'Login failed';
         
         setState(() {
-          isLoading = false;
           errorMessage = detail.toString();
         });
         
@@ -285,10 +224,69 @@ class _DecentLoginPageState extends State<DecentLoginPage>
       }
     } catch (e) {
       setState(() {
-        isLoading = false;
-        errorMessage = 'Connection error: $e';
+        errorMessage = 'Connection error: ${e.toString().replaceAll('Exception:', '').trim()}';
       });
       if (kDebugMode) debugPrint('❌ Login exception: $e');
+    } finally {
+      // 🔧 FIX: Always reset loading state so the UI doesn't get stuck spinning
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
+  /// Run heavy post-login sync in the background so the user reaches the dashboard quickly
+  Future<void> _runPostLoginSyncInBackground(int userId) async {
+    try {
+      if (kDebugMode) debugPrint('🔄 [Background] Starting post-login sync flow...');
+
+      // Restore shop profile
+      try {
+        final profileResult = await ShopProfilePersistenceService.restoreProfile();
+        if (!profileResult['success']) {
+          final localProfile = await ShopProfilePersistenceService.loadProfileLocally();
+          if (localProfile != null) {
+            await ShopProfilePersistenceService.applyProfileToPrefs(localProfile);
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ [Background] Shop profile restore error: $e');
+      }
+
+      // Upload pending offline sales
+      try {
+        await SyncService.processQueueSafe();
+        await SyncService.downloadUserDataSafe();
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ [Background] Sync queue error: $e');
+      }
+
+      // Merge with backend sales
+      try {
+        final restorationResult = await SalesRestoreService.completeRestoration();
+        if (restorationResult['success']) {
+          await SalesRestoreService.markRestorationComplete();
+        }
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ [Background] Sales restore error: $e');
+      }
+
+      // Refresh inventory
+      try {
+        await InventorySyncService.refreshAllInventory();
+        await InventorySyncService.updateLastSyncTimestamp();
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ [Background] Inventory refresh error: $e');
+      }
+
+      // Start listeners
+      try {
+        await OnlineOrdersListener.instance.restartForCurrentUser();
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ [Background] Listener start error: $e');
+      }
+
+      if (kDebugMode) debugPrint('✅ [Background] Post-login sync complete');
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ [Background] Post-login sync failed: $e');
     }
   }
 

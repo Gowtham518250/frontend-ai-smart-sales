@@ -213,6 +213,7 @@ class _InventoryPageState extends State<InventoryPage> {
       _products[idx] = updated;
       setState(() {}); // Update UI first
       _saveLocal(p['id'].toString(), updated); // Then save async (outside setState)
+      SyncQueueManager.enqueue('update_local_product', updated);
     }
   }
 
@@ -961,7 +962,9 @@ class _InventoryPageState extends State<InventoryPage> {
             '${ApiClient.inventoryPrefix}/products/$productId?user_id=$_userId',
             headers: {'Authorization': 'Bearer $token'},
           ).timeout(const Duration(seconds: 8));
-        } catch (_) {}
+        } catch (_) {
+          SyncQueueManager.enqueue('delete_product', p);
+        }
       }
 
       // Remove from local cache
@@ -1060,6 +1063,7 @@ class _InventoryPageState extends State<InventoryPage> {
                     }
                   } catch (e) {
                     debugPrint('Backend sync error - will sync later: $e');
+                    SyncQueueManager.enqueue('update_local_product', updated);
                   }
 
                   if (mounted) Navigator.pop(context);

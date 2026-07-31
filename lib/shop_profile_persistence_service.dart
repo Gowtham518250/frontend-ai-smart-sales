@@ -132,8 +132,9 @@ class ShopProfilePersistenceService {
         
         if (kDebugMode) debugPrint('🔄 Backend sync attempt $attempt/$maxRetries');
         
+        final userId = profile['user_id'] ?? profile['id'] ?? '';
         final response = await ApiClient.putJson(
-          '/api/shop/profile',
+          '/api/shop/profile${userId.toString().isNotEmpty ? "?user_id=$userId" : ""}',
           profile,
           headers: {'Authorization': 'Bearer $token'},
         ).timeout(const Duration(seconds: 15));

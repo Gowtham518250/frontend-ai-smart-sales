@@ -279,7 +279,10 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
           _overdueCount = (sumData['overdue_customers_count'] as num?)?.toInt() ?? 0;
 
           final rawList = List<Map<String, dynamic>>.from(listData['customers'] ?? []);
-          _customers = rawList;
+          _customers = rawList.where((c) {
+            double bal = (c['balance'] as num?)?.toDouble() ?? 0.0;
+            return bal > 0;
+          }).toList();
           
           if (kDebugMode) debugPrint('✅ Backend khata data loaded successfully');
         } else {
@@ -564,7 +567,7 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
                                 });
 
                                 if (resp.statusCode == 200) {
-                                  if (mounted) Navigator.pop(ctx);
+                                  if (ctx.mounted) Navigator.pop(ctx);
                                   _showToast('✅ Payment of ₹$amt recorded successfully!');
                                   _loadKhata();
                                 } else {
@@ -574,7 +577,7 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
                               } catch (e) {
                                 _showToast('Error recording payment: $e');
                               } finally {
-                                if (mounted) setModalState(() => isSubmitting = false);
+                                if (ctx.mounted) setModalState(() => isSubmitting = false);
                               }
                             },
                       style: ElevatedButton.styleFrom(

@@ -316,12 +316,12 @@ class _DashboardPageState extends State<DashboardPage>
       double _parseSaleAmount(Map<String, dynamic> s) {
         // Feature Request: "sync with sales if i enterd paid then only paid amount need to sales otherwise not"
         final raw =
-            s['paid_amount'] ??
-            s['invoice_total'] ??
             s['total'] ??
             s['grand_total'] ??
+            s['invoice_total'] ??
             s['final_amount'] ??
             s['totalAmount'] ??
+            s['paid_amount'] ??
             0;
         if (raw is num) return raw.toDouble();
         return double.tryParse(raw.toString()) ?? 0.0;

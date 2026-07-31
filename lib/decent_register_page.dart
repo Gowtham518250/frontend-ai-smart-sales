@@ -13,7 +13,6 @@ import 'secure_token_storage.dart';
 import 'session_management.dart';
 import 'user_data_clear_service.dart';
 import 'scoped_shared_preferences.dart';
-import 'role_selection_page.dart';
 
 /// NOTE: The previous version of this file was actually implemented as a
 /// LOGIN form (it called POST /auth/login and never touched
@@ -118,11 +117,9 @@ class _DecentRegisterPageState extends State<DecentRegisterPage>
         }
 
         if (!mounted) return;
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (ctx) => RoleSelectionPage(email: email),
-          ),
-        );
+        // 🔧 FIX: After registration, send new users to shop setup page first.
+        // Previously they went directly to the dashboard, skipping shop profile setup.
+        Navigator.of(context).pushReplacementNamed('/shop-details');
       } else {
         // Surface the backend's real validation message, e.g.:
         // 409 "This email is already registered. Please login instead."

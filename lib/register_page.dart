@@ -364,7 +364,9 @@ class _RegisterPageState extends State<RegisterPage>
           isLoading = false;
 
           final lowerDetail = detail.toLowerCase();
-          if (lowerDetail.contains('email already') || lowerDetail.contains('already registered')) {
+          if (lowerDetail.contains('username or email')) {
+            errorMessage = '👤📧 This shop name or email is already taken. Please try another.';
+          } else if (lowerDetail.contains('email already') && !lowerDetail.contains('username')) {
             errorMessage = '📧 This email is already registered.\n\n💡 Try logging in instead, or use a different email address.';
           } else if (lowerDetail.contains('username already') || lowerDetail.contains('shop name')) {
             errorMessage = '👤 This owner/shop name is already taken.\n\n💡 Please choose a different name.';
