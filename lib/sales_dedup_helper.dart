@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'format_helper.dart';
 import 'local_storage_service.dart';
+import 'financial_math.dart';
 
 /// Result of a one-time Hive sales cleanup (Option B).
 class SalesCleanupResult {
@@ -237,7 +238,7 @@ class SalesDedupHelper {
       final qty = _num(item['quantity'] ?? item['qty'], 1);
       if (price <= 0 || qty <= 0) continue;
 
-      final lineTotal = _num(item['total'], price * qty);
+      final lineTotal = _num(item['total'], CurrencyManager.multiply(price, qty));
       final timestamp = item['sale_date'] ?? item['created_at'] ?? DateTime.now().toUtc().toIso8601String();
       final saleId = (item['sale_id'] ?? item['id'] ?? 'API_${item.hashCode}').toString();
       final product = (item['product'] ?? item['product_name'] ?? item['item'] ?? item['name'] ?? item['itemName'] ?? item['title'] ?? '').toString().trim();

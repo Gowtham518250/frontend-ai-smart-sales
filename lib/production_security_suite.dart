@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'rate_limiter.dart';
 import 'secure_token_storage.dart';
 import 'session_logout_service.dart';
@@ -239,33 +240,37 @@ class ProductionSecuritySuite {
 
   // ============ OFFLINE DATA PROTECTION ============
 
-  /// Encrypt sensitive data before storing
+  /// Encrypt sensitive data before storing using flutter_secure_storage
   static Future<void> saveProtectedData(
     String key,
     String value,
   ) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      // 🔒 SECURITY FIX: Use flutter_secure_storage instead of fake XOR encryption
+      // flutter_secure_storage provides proper encryption with platform-specific secure storage
+      const secureStorage = FlutterSecureStorage(
+        aOptions: AndroidOptions(
+          encryptedSharedPreferences: true,
+        ),
+      );
       
-      // Simple XOR encryption for SharedPreferences (token stored in SecureStorage separately)
-      final bytes = value.codeUnits;
-      final encrypted = bytes.map((b) => b ^ 0xAA).toList(); // Simple obfuscation
-      await prefs.setString('_protected_$key', String.fromCharCodes(encrypted));
+      await secureStorage.write(key: '_protected_$key', value: value);
     } catch (e) {
       if (kDebugMode) debugPrint('Error saving protected data: $e');
     }
   }
 
-  /// Retrieve encrypted data
+  /// Retrieve encrypted data using flutter_secure_storage
   static Future<String?> getProtectedData(String key) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final encrypted = prefs.getString('_protected_$key');
-      if (encrypted == null) return null;
+      // 🔒 SECURITY FIX: Use flutter_secure_storage instead of fake XOR decryption
+      const secureStorage = FlutterSecureStorage(
+        aOptions: AndroidOptions(
+          encryptedSharedPreferences: true,
+        ),
+      );
       
-      final bytes = encrypted.codeUnits;
-      final decrypted = bytes.map((b) => b ^ 0xAA).toList();
-      return String.fromCharCodes(decrypted);
+      return await secureStorage.read(key: '_protected_$key');
     } catch (e) {
       if (kDebugMode) debugPrint('Error reading protected data: $e');
       return null;

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart' show launchUrl, LaunchMode;
 import 'whatsapp_message_service.dart';
 import 'payment_detection_service.dart';
+import 'financial_math.dart';
 
 class DayClosingPage extends StatefulWidget {
   const DayClosingPage({super.key});
@@ -42,6 +43,10 @@ class _DayClosingPageState extends State<DayClosingPage> {
 
   Future<void> _loadTodayData() async {
     final allSales = await LocalStorageService.loadSales();
+    
+    // 🔒 FIX: Check if widget is still mounted before setState
+    if (!mounted) return;
+    
     final now = DateTime.now();
     final todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
 
@@ -67,7 +72,7 @@ class _DayClosingPageState extends State<DayClosingPage> {
         if (total == 0 && s['price'] != null && s['quantity'] != null) {
           final price = double.tryParse(s['price'].toString()) ?? 0;
           final qty = double.tryParse(s['quantity'].toString()) ?? 1;
-          total = price * qty;
+          total = CurrencyManager.multiply(price, qty);
         }
         
         // Skip invalid/zero amounts

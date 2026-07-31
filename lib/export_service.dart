@@ -8,6 +8,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
+import 'financial_math.dart';
 import 'notification_service.dart';
 
 class ExportService {
@@ -31,7 +32,7 @@ class ExportService {
       for (var sale in sortedSales) {
         final double price = double.tryParse(sale['price']?.toString() ?? '0') ?? 0;
         final double qty = double.tryParse(sale['quantity']?.toString() ?? sale['qty']?.toString() ?? '1') ?? 1;
-        final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? (price * qty).toString()) ?? (price * qty);
+        final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? CurrencyManager.multiply(price, qty).toString()) ?? CurrencyManager.multiply(price, qty);
         
         csvData.add([
           _formatDate(sale['date'] ?? sale['sale_date'] ?? DateTime.now()),
@@ -76,7 +77,7 @@ class ExportService {
         final double qty = double.tryParse(sale['quantity']?.toString() ?? sale['qty']?.toString() ?? '1') ?? 1;
         final double gstPercent = double.tryParse(sale['gstPercent']?.toString() ?? '18') ?? 18.0;
         
-        final double invoiceValue = price * qty;
+        final double invoiceValue = CurrencyManager.multiply(price, qty);
         final double taxableValue = invoiceValue / (1 + (gstPercent / 100));
 
         csvData.add([
@@ -113,7 +114,7 @@ class ExportService {
       for (var sale in sales) {
         final double price = double.tryParse(sale['price']?.toString() ?? '0') ?? 0;
         final double qty = double.tryParse(sale['quantity']?.toString() ?? sale['qty']?.toString() ?? '1') ?? 1;
-        final double total = price * qty;
+        final double total = CurrencyManager.multiply(price, qty);
 
         csvData.add([
           _formatDate(sale['date'] ?? sale['sale_date'] ?? DateTime.now()),
@@ -160,7 +161,7 @@ class ExportService {
       for (var sale in sortedSales) {
         final double price = double.tryParse(sale['price']?.toString() ?? '0') ?? 0;
         final double qty = double.tryParse(sale['quantity']?.toString() ?? sale['qty']?.toString() ?? '1') ?? 1;
-        final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? (price * qty).toString()) ?? (price * qty);
+        final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? CurrencyManager.multiply(price, qty).toString()) ?? CurrencyManager.multiply(price, qty);
         
         sheetObject.appendRow([
           TextCellValue(_formatDate(sale['date'] ?? sale['sale_date'] ?? DateTime.now())),
@@ -345,7 +346,7 @@ class ExportService {
               data: sortedSales.map((sale) {
                 final double price = double.tryParse(sale['price']?.toString() ?? '0') ?? 0;
                 final double qty = double.tryParse(sale['quantity']?.toString() ?? sale['qty']?.toString() ?? '1') ?? 1;
-                final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? (price * qty).toString()) ?? (price * qty);
+                final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? CurrencyManager.multiply(price, qty).toString()) ?? CurrencyManager.multiply(price, qty);
                 final String name = (sale['product'] ?? sale['item'] ?? 'N/A').toString();
                 final String dateStr = _formatDate(sale['date'] ?? sale['sale_date'] ?? DateTime.now());
                 
@@ -480,7 +481,7 @@ class ExportService {
               data: sortedSales.map((sale) {
                  final double price = double.tryParse(sale['price']?.toString() ?? '0') ?? 0;
                  final double qty = double.tryParse(sale['quantity']?.toString() ?? sale['qty']?.toString() ?? '1') ?? 1;
-                 final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? (price * qty).toString()) ?? (price * qty);
+                 final double total = double.tryParse(sale['total']?.toString() ?? sale['total_with_tax']?.toString() ?? CurrencyManager.multiply(price, qty).toString()) ?? CurrencyManager.multiply(price, qty);
                  final String name = (sale['product'] ?? sale['item'] ?? 'N/A').toString();
                  final String dateStr = _formatDate(sale['date'] ?? sale['sale_date'] ?? DateTime.now());
 

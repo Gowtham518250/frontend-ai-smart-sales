@@ -1,13 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'dart:convert';
 import 'dart:async';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 import 'stock_alert_service.dart';
 import 'inventory_management_service.dart';
 import 'inventory_sync_service.dart';
 import 'secure_token_storage.dart';
+import 'financial_math.dart';
 import 'sync_queue_manager.dart';
 import 'local_storage_service.dart';
 import 'retail_growth_kit.dart';
@@ -152,8 +152,9 @@ class SaleService {
 
         final priceRaw = item['price'] ?? item['unit_price'] ?? 0;
         final price = (priceRaw is num) ? priceRaw.toDouble() : double.tryParse(priceRaw.toString()) ?? 0.0;
+        final qtyDouble = (qtyRaw is num) ? qtyRaw.toDouble() : double.tryParse(qtyRaw.toString()) ?? 1.0;
         
-        final lineTotal = price * qty;
+        final lineTotal = CurrencyManager.multiply(price, qtyDouble);
         
         if (kDebugMode) {
           debugPrint('${isBorrow ? 'INVOICE' : 'SALE'} CREATED:\nid: $saleId\nproduct_name: $validName\nquantity: $qty\nprice: $price');
@@ -685,7 +686,7 @@ class SaleService {
       final List<Map<String, dynamic>> normalizedItems = items.map((item) {
         final double price = item['unit_price'] ?? item['price'] ?? 0.0;
         final int qty = item['quantity'] ?? item['qty'] ?? 1;
-        final double lineTotal = item['line_total'] ?? item['total'] ?? price * qty;
+        final double lineTotal = item['line_total'] ?? item['total'] ?? CurrencyManager.multiply(price, qty.toDouble());
         
         return {
           ...item,

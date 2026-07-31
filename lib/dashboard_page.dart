@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'sms_background_receiver.dart';
+import 'financial_math.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -2527,7 +2528,7 @@ class _DashboardPageState extends State<DashboardPage>
         // Normalize item for consistent parsing
         final double price = double.tryParse(rawItem['price']?.toString() ?? rawItem['unit_price']?.toString() ?? '0') ?? 0.0;
         final double qty = double.tryParse(rawItem['qty']?.toString() ?? rawItem['quantity']?.toString() ?? '1') ?? 1.0;
-        final double lineTotal = double.tryParse(rawItem['total']?.toString() ?? rawItem['line_total']?.toString() ?? rawItem['total_with_tax']?.toString() ?? (price * qty).toString()) ?? (price * qty);
+        final double lineTotal = double.tryParse(rawItem['total']?.toString() ?? rawItem['line_total']?.toString() ?? rawItem['total_with_tax']?.toString() ?? CurrencyManager.multiply(price, qty).toString()) ?? CurrencyManager.multiply(price, qty);
         
         final item = {
           ...rawItem,
