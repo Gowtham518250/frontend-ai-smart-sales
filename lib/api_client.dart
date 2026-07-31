@@ -495,7 +495,7 @@ class ApiClient {
   }
 
   // Try POST with JSON body
-  static Future<http.Response> postJson(String path, Map body, {Map<String, String>? headers}) async {
+  static Future<http.Response> postJson(String path, Map<String, dynamic> body, {Map<String, String>? headers}) async {
     if (kDebugMode) debugPrint('🔵 API: Attempting POST to $path');
     
     // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
@@ -504,7 +504,16 @@ class ApiClient {
     }
     
     // 🔒 INPUT SANITIZATION: Sanitize input before sending
-    final sanitizedBody = _sanitizeInput(body as Map<String, dynamic>);
+    // 🔧 CRITICAL FIX: previously used `body as Map<String, dynamic>`, which
+    // throws "type '_Map<dynamic, dynamic>' is not a subtype of type
+    // 'Map<String, dynamic>'" on EVERY call — because the parameter used to
+    // be declared as raw `Map` (unparameterized), so Dart inferred every
+    // map-literal argument passed in as Map<dynamic, dynamic>. This broke
+    // login, attendance check-in, and every other POST request in the app.
+    // Now that the parameter itself is strongly typed, and we use `.from()`
+    // instead of an unsafe cast as extra defense against any future caller
+    // that passes a loosely-typed map.
+    final sanitizedBody = _sanitizeInput(Map<String, dynamic>.from(body));
     if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
     
     // Auth Strict Rate limiting
@@ -938,7 +947,7 @@ class ApiClient {
   }
 
   // Try PUT with JSON body
-  static Future<http.Response> putJson(String path, Map body, {Map<String, String>? headers}) async {
+  static Future<http.Response> putJson(String path, Map<String, dynamic> body, {Map<String, String>? headers}) async {
     if (kDebugMode) debugPrint('🔵 API: Attempting PUT to $path');
     
     // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
@@ -947,7 +956,8 @@ class ApiClient {
     }
     
     // 🔒 INPUT SANITIZATION: Sanitize input before sending
-    final sanitizedBody = _sanitizeInput(body as Map<String, dynamic>);
+    // 🔧 CRITICAL FIX: same root cause as postJson above — see that comment.
+    final sanitizedBody = _sanitizeInput(Map<String, dynamic>.from(body));
     if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
     
     if (!_rateLimiter.allowRequest(path)) await _rateLimiter.waitIfRateLimited(path);
@@ -1165,6 +1175,3 @@ class ApiClient {
     return postMultipart(path, {}, files: [multipartFile]);
   }
 }
-
-
-

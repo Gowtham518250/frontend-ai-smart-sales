@@ -227,8 +227,8 @@ class ParsedItem {
     required this.unit,
     required this.price,
     required this.confidence,
-    this.isConfirmed = true,
-  });
+    bool? isConfirmed,
+  }) : isConfirmed = isConfirmed ?? (confidence >= 0.6);
 
   Map<String, dynamic> toMap() => {
     'name': name,

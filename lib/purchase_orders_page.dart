@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
+import 'local_storage_service.dart';
+import 'sync_queue_manager.dart';
+import 'sync_service.dart';
 
 class PurchaseOrdersPage extends StatefulWidget {
   const PurchaseOrdersPage({super.key});
@@ -70,64 +74,210 @@ class _PurchaseOrdersPageState extends State<PurchaseOrdersPage> {
 
   Future<void> _markDelivered(dynamic poId) async {
     try {
-      await ApiClient.postJson('/purchase-orders/$poId/mark-delivered', {});
-      // Sync with backend and refresh local data
-      await _fetchOrders();
+      final res = await ApiClient.postJson('/purchase-orders/$poId/mark-delivered', {}).timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200 && res.statusCode != 201) throw Exception('status ${res.statusCode}');
     } catch (e) {
-      debugPrint('⚠️ Failed to mark PO as delivered: $e');
-      // Still refresh local data even if backend sync fails
-      await _fetchOrders();
+      debugPrint('⚠️ Failed to mark PO as delivered live, queuing for retry: $e');
+      // 🔧 FIX: previously a failure here was just logged and dropped —
+      // the PO would silently stay PENDING forever with no retry.
+      await SyncQueueManager.enqueue('update_purchase_order_status', {
+        'po_id': poId,
+        'po_action': 'mark-delivered',
+      });
+      unawaited(SyncService.processQueueSafe());
     }
+    await _fetchOrders();
   }
 
   Future<void> _cancelPO(dynamic poId) async {
-    await ApiClient.postJson('/purchase-orders/$poId/cancel', {});
+    try {
+      final res = await ApiClient.postJson('/purchase-orders/$poId/cancel', {}).timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200 && res.statusCode != 201) throw Exception('status ${res.statusCode}');
+    } catch (e) {
+      debugPrint('⚠️ Failed to cancel PO live, queuing for retry: $e');
+      await SyncQueueManager.enqueue('update_purchase_order_status', {
+        'po_id': poId,
+        'po_action': 'cancel',
+      });
+      unawaited(SyncService.processQueueSafe());
+    }
     _fetchOrders();
+  }
+
+  /// 🔧 FIX: previously this always sent `'items': []` — the backend's
+  /// PurchaseOrderCreate schema requires `items: List[POItem]` with at
+  /// least one entry (`min_length=1`), so every single "Create PO" here
+  /// was rejected by the backend with a 422 the moment it tried to sync.
+  /// This also durably queues the create so a flaky connection doesn't
+  /// silently lose the order (matches the retry pattern used for sales).
+  Future<void> _createPurchaseOrder(Map<String, dynamic> payload) async {
+    try {
+      final res = await ApiClient.postJson('/purchase-orders/', payload).timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        await _fetchOrders();
+        return;
+      }
+      throw Exception('Backend rejected PO: ${res.statusCode} ${res.body}');
+    } catch (e) {
+      debugPrint('⚠️ PO create failed live, queuing for retry: $e');
+      // Durable fallback: retry automatically once we're back online,
+      // instead of the order simply vanishing.
+      await SyncQueueManager.enqueue('create_purchase_order', payload);
+      unawaited(SyncService.processQueueSafe());
+    }
   }
 
   void _showCreatePO() {
     final supplierC = TextEditingController();
-    final amountC = TextEditingController();
     final notesC = TextEditingController();
+    List<Map<String, dynamic>> orderItems = [];
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: _card,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('New Purchase Order', style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            _field(supplierC, 'Supplier Name'),
-            const SizedBox(height: 12),
-            _field(amountC, 'Total Amount', numeric: true),
-            const SizedBox(height: 12),
-            _field(notesC, 'Notes / Items'),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () async {
-                  await ApiClient.postJson('/purchase-orders/', {
-                    'supplier_name': supplierC.text,
-                    'total_amount': double.tryParse(amountC.text) ?? 0,
-                    'notes': notesC.text,
-                    'items': [],
-                  });
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  _fetchOrders();
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.indigoAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
-                child: const Text('Create PO', style: TextStyle(fontWeight: FontWeight.bold)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          Future<void> pickProduct() async {
+            final products = await LocalStorageService.loadBackendProducts();
+            if (!ctx.mounted) return;
+            final selected = await showDialog<Map<String, dynamic>>(
+              context: ctx,
+              builder: (dCtx) => AlertDialog(
+                backgroundColor: _card,
+                title: const Text('Select Product', style: TextStyle(color: Colors.white)),
+                content: SizedBox(
+                  width: double.maxFinite,
+                  height: 340,
+                  child: products.isEmpty
+                      ? const Center(child: Text('No products in inventory yet', style: TextStyle(color: Colors.white38)))
+                      : ListView.builder(
+                          itemCount: products.length,
+                          itemBuilder: (_, i) {
+                            final p = products[i];
+                            return ListTile(
+                              title: Text(p['product_name']?.toString() ?? 'Unknown', style: const TextStyle(color: Colors.white)),
+                              subtitle: Text('Stock: ${p['current_stock'] ?? 0}', style: const TextStyle(color: Colors.white38)),
+                              onTap: () => Navigator.pop(dCtx, p),
+                            );
+                          },
+                        ),
+                ),
+              ),
+            );
+            if (selected == null || !ctx.mounted) return;
+
+            final qtyC = TextEditingController(text: '1');
+            final costC = TextEditingController(text: (selected['price'] ?? 0).toString());
+            final add = await showDialog<bool>(
+              context: ctx,
+              builder: (dCtx) => AlertDialog(
+                backgroundColor: _card,
+                title: Text(selected['product_name']?.toString() ?? 'Item', style: const TextStyle(color: Colors.white)),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  _field(qtyC, 'Quantity', numeric: true),
+                  const SizedBox(height: 12),
+                  _field(costC, 'Unit Cost (₹)', numeric: true),
+                ]),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(dCtx, false), child: const Text('Cancel')),
+                  TextButton(onPressed: () => Navigator.pop(dCtx, true), child: const Text('Add')),
+                ],
+              ),
+            );
+            final qty = int.tryParse(qtyC.text.trim()) ?? 0;
+            if (add == true && qty > 0) {
+              setModalState(() {
+                orderItems.add({
+                  'product_id': selected['id'],
+                  'product_name': selected['product_name'],
+                  'quantity': qty,
+                  'unit_cost': double.tryParse(costC.text.trim()) ?? 0.0,
+                });
+              });
+            }
+          }
+
+          final total = orderItems.fold<double>(
+            0.0,
+            (sum, it) => sum + ((it['quantity'] as int) * (it['unit_cost'] as num).toDouble()),
+          );
+
+          return Padding(
+            padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(ctx).viewInsets.bottom + 20),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('New Purchase Order', style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 16),
+                  _field(supplierC, 'Supplier Name'),
+                  const SizedBox(height: 12),
+                  _field(notesC, 'Notes (optional)'),
+                  const SizedBox(height: 16),
+                  Text('Items (at least one required)', style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  ...orderItems.asMap().entries.map((e) {
+                    final i = e.key;
+                    final it = e.value;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(10)),
+                      child: Row(children: [
+                        Expanded(child: Text('${it['product_name']}', style: const TextStyle(color: Colors.white))),
+                        Text('${it['quantity']} × ₹${it['unit_cost']}', style: const TextStyle(color: Colors.white60, fontSize: 12)),
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent, size: 20),
+                          onPressed: () => setModalState(() => orderItems.removeAt(i)),
+                        ),
+                      ]),
+                    );
+                  }),
+                  OutlinedButton.icon(
+                    onPressed: pickProduct,
+                    icon: const Icon(Icons.add, color: Colors.indigoAccent),
+                    label: const Text('Add Item', style: TextStyle(color: Colors.indigoAccent)),
+                    style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.indigoAccent)),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('Estimated Total: ₹${total.toStringAsFixed(2)}',
+                      style: GoogleFonts.poppins(color: Colors.tealAccent, fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        final supplierName = supplierC.text.trim();
+                        if (supplierName.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Supplier name is required')));
+                          return;
+                        }
+                        if (orderItems.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Add at least one item')));
+                          return;
+                        }
+                        final payload = {
+                          'supplier_name': supplierName,
+                          'items': orderItems,
+                          if (notesC.text.trim().isNotEmpty) 'notes': notesC.text.trim(),
+                        };
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        await _createPurchaseOrder(payload);
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.indigoAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
+                      child: const Text('Create PO', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -191,7 +341,7 @@ class _PurchaseOrdersPageState extends State<PurchaseOrdersPage> {
                             ]),
                             const SizedBox(height: 8),
                             Text(po['supplier_name']?.toString() ?? 'Supplier', style: GoogleFonts.poppins(color: Colors.white70)),
-                            Text('Rs ${po['total_amount']?.toString() ?? '0'}', style: GoogleFonts.poppins(color: Colors.tealAccent, fontWeight: FontWeight.bold, fontSize: 18)),
+                            Text('Rs ${po['total_cost']?.toString() ?? '0'}', style: GoogleFonts.poppins(color: Colors.tealAccent, fontWeight: FontWeight.bold, fontSize: 18)),
                             if (status == 'PENDING') ...[
                               const SizedBox(height: 12),
                               Row(children: [
