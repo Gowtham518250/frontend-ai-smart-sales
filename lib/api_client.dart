@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'session_management.dart';
 import 'dart:async';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;

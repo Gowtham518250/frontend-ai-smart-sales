@@ -11,6 +11,7 @@ import 'payment_detection_service.dart';
 import 'payment_detection_system.dart';
 import 'security_service.dart';
 import 'sale_service.dart';
+import 'secure_preferences_service.dart';
 import 'secure_token_storage.dart';
 import 'session_management.dart';
 import 'sync_queue_manager.dart';
@@ -48,6 +49,7 @@ class SessionLogoutService {
     // Use UserDataClearService which now preserves all business data in scoped boxes
     await UserDataClearService.clearAllUserData();
     await SecureTokenStorage.clearAll();
+    await SecurePreferencesService.clearAllPaymentData();
     await SessionManagementService.clearTokens();
     // DO NOT clear sync queue! (it's user-scoped and will be reloaded for new user)
     // await SyncQueueManager.clearQueue();

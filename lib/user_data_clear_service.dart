@@ -2,6 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'inventory_management_service.dart';
 import 'local_storage_service.dart';
 import 'inventory_sync_service.dart';
+import 'secure_preferences_service.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 
 /// Clear ONLY session-specific data on logout/new login
@@ -241,6 +242,9 @@ class UserDataClearService {
 
       // Reset inventory management service
       InventoryManagementService.reset();
+
+      // Clear any sensitive payment credentials stored outside SharedPreferences
+      await SecurePreferencesService.clearAllPaymentData();
 
       // DO NOT clear orphan sales boxes - they're already user-scoped!
       

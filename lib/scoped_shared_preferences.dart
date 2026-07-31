@@ -31,6 +31,7 @@ class ScopedSharedPreferences {
     }
     if (_currentUserId == '0') {
       if (kDebugMode) debugPrint('⚠️ SECURITY: No user ID set for scoped key: $key');
+      throw Exception('SECURITY: ScopedSharedPreferences accessed without a current user ID.');
     }
     return 'user_${_currentUserId}_$key';
   }
@@ -98,7 +99,7 @@ class ScopedSharedPreferences {
     final keys = prefs.getKeys();
     
     for (final key in keys) {
-      if (key.startsWith('user_$userId\_')) {
+      if (key.startsWith('user_${userId}_')) {
         await prefs.remove(key);
         if (kDebugMode) debugPrint('🔒 Cleared scoped key: $key');
       }
@@ -133,7 +134,7 @@ class ScopedSharedPreferences {
     final keys = prefs.getKeys();
     
     for (final key in keys) {
-      if (key.startsWith('user_$userId\_')) {
+      if (key.startsWith('user_${userId}_')) {
         await prefs.remove(key);
         if (kDebugMode) debugPrint('🔒 Cleared user data for ID $userId: $key');
       }

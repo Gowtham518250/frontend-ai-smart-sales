@@ -128,9 +128,9 @@ class _DecentLoginPageState extends State<DecentLoginPage>
     });
 
     try {
-      // ✅ FIXED: Use 'email' field (backend expects email, not username)
-      final response = await ApiClient.postJson('/auth/login', {
-        'email': emailController.text.trim(),  // Backend uses 'email' field
+      // ✅ FIXED: Use centralized endpoint constant and 'email' field
+      final response = await ApiClient.postJson(ApiClient.loginEndpoint, {
+        'email': emailController.text.trim(),
         'password': passwordController.text.trim(),
       }).timeout(const Duration(seconds: 20));
 
@@ -139,6 +139,7 @@ class _DecentLoginPageState extends State<DecentLoginPage>
         
         // ✅ FIXED: Parse 'access_token' from response (not 'token')
         final accessToken = data['access_token']?.toString() ?? '';
+        final refreshToken = data['refresh_token']?.toString() ?? '';
         final tokenType = data['token_type']?.toString() ?? 'bearer';
         final role = data['role']?.toString() ?? 'OWNER';
         
@@ -152,15 +153,15 @@ class _DecentLoginPageState extends State<DecentLoginPage>
         final userId = (() {
           try {
             final parts = accessToken.split('.');
-            if (parts.length != 3) return 0;
+            if (parts.length != 3) return data['user_id'] is int ? data['user_id'] as int : int.tryParse(data['user_id']?.toString() ?? '') ?? 0;
             String normalized = parts[1].replaceAll('-', '+').replaceAll('_', '/');
             while (normalized.length % 4 != 0) {
               normalized += '=';
             }
             final payload = json.decode(utf8.decode(base64.decode(normalized)));
-            return int.tryParse(payload['sub']?.toString() ?? '') ?? 0;
+            return int.tryParse(payload['sub']?.toString() ?? '') ?? (data['user_id'] is int ? data['user_id'] as int : int.tryParse(data['user_id']?.toString() ?? '') ?? 0);
           } catch (_) {
-            return 0;
+            return data['user_id'] is int ? data['user_id'] as int : int.tryParse(data['user_id']?.toString() ?? '') ?? 0;
           }
         })();
 
@@ -172,8 +173,9 @@ class _DecentLoginPageState extends State<DecentLoginPage>
         await SessionManagementService.initializeSession(
           userId: userId,
           accessToken: accessToken,
+          refreshToken: refreshToken.isNotEmpty ? refreshToken : null,
           userName: data['user_name']?.toString() ?? '',
-          userEmail: emailController.text.trim(),
+          userEmail: data['email']?.toString() ?? emailController.text.trim(),
           role: role,
           deviceId: deviceId,
         );

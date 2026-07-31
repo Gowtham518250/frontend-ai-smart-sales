@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 
 class SecureTokenStorage {
@@ -35,12 +34,23 @@ class SecureTokenStorage {
   }
   
   /// 🔧 PHASE 2 FIX: Get scoped key with user_id to prevent cross-user token leakage
-  static Future<String> _getScopedKey(String baseKey) async {
+  static Future<String?> _getScopedKeyOrBase(String baseKey) async {
     final userId = await _getUserId();
     if (userId == null || userId == 0) {
-      return baseKey; // Fallback to base key if no user_id (for login flow)
+      return null;
     }
     return '${baseKey}_$userId';
+  }
+
+  static Future<String> _getScopedKey(String baseKey) async {
+    final scopedKey = await _getScopedKeyOrBase(baseKey);
+    if (scopedKey == null) {
+      if (kDebugMode) {
+        debugPrint('⚠️ SECURITY: No user_id available for scoped secure token storage.');
+      }
+      throw Exception('SECURITY: No user_id available for scoped secure token storage.');
+    }
+    return scopedKey;
   }
 
   static Future<enc.Key> _getOrCreateKey() async {
@@ -159,23 +169,27 @@ class SecureTokenStorage {
     final scopedCustomerKey = await _getScopedKey(_kCustomerToken);
     final combined = await _storage.read(key: scopedCustomerKey);
     if (combined == null) return null;
+
     try {
       final parts = combined.split(':');
-      // 🔒 SECURITY FIX: Safe array access - check array bounds before access
       if (parts.length < 2) return null;
       final key = await _getOrCreateKey();
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));
+      return encrypter.decrypt(enc.Encrypted.fromBase64(parts[1]), iv: iv);
     } catch (e) {
       if (kDebugMode) debugPrint('SecureTokenStorage.getCustomerToken: decrypt failed ($e)');
       return null;
     }
+  }
+
+  static Future<String?> getToken() async {
     final scopedTokenKey = await _getScopedKey(_kToken);
     final combined = await _storage.read(key: scopedTokenKey);
     if (combined == null) return null;
+
     try {
       final parts = combined.split(':');
-      // 🔒 SECURITY FIX: Safe array access - check array bounds before access
       if (parts.length < 2) return null;
       final key = await _getOrCreateKey();
       final iv = enc.IV.fromBase64(parts[0]);
@@ -228,11 +242,13 @@ class SecureTokenStorage {
     final encrypter = enc.Encrypter(enc.AES(key));
     final jsonStr = json.encode(userData);
     final encrypted = encrypter.encrypt(jsonStr, iv: iv);
-    await _storage.write(key: _kUser, value: '${iv.base64}:${encrypted.base64}');
+    final scopedKey = await _getScopedKey(_kUser);
+    await _storage.write(key: scopedKey, value: '${iv.base64}:${encrypted.base64}');
   }
 
   static Future<Map<String, dynamic>?> getUser() async {
-    final combined = await _storage.read(key: _kUser);
+    final scopedKey = await _getScopedKey(_kUser);
+    final combined = await _storage.read(key: scopedKey);
     if (combined == null) return null;
     try {
       final parts = combined.split(':');
@@ -254,35 +270,44 @@ class SecureTokenStorage {
     // owner_biometric_status_v1, forcing the user to re-setup fingerprint/face
     // unlock after every logout. Biometric settings belong to the DEVICE, not
     // the session, so they must persist across logins.
-    
-    // Clear scoped keys for current user
-    final scopedTokenKey = await _getScopedKey(_kToken);
-    final scopedCustomerKey = await _getScopedKey(_kCustomerToken);
-    final scopedRefreshKey = await _getScopedKey(_kRefreshToken);
-    final scopedTimeKey = await _getScopedKey(_kTime);
-    
-    await _storage.delete(key: scopedTokenKey);
-    await _storage.delete(key: scopedCustomerKey);
-    await _storage.delete(key: scopedRefreshKey);
-    await _storage.delete(key: scopedTimeKey);
+
+    final userId = await _getUserId();
+    if (userId != null && userId > 0) {
+      await _storage.delete(key: '${_kToken}_$userId');
+      await _storage.delete(key: '${_kCustomerToken}_$userId');
+      await _storage.delete(key: '${_kRefreshToken}_$userId');
+      await _storage.delete(key: '${_kTime}_$userId');
+      await _storage.delete(key: '${_kUser}_$userId');
+    }
+
+    await _storage.delete(key: _kToken);
+    await _storage.delete(key: _kCustomerToken);
+    await _storage.delete(key: _kRefreshToken);
+    await _storage.delete(key: _kTime);
     await _storage.delete(key: _kUser);
     await _storage.delete(key: _kKey);
+    await _storage.delete(key: '${_kKey}_salt');
     await clearUserId();
-    // NOTE: _kBiometricEnabled and _kOwnerBiometricStatus are intentionally
     // NOT deleted here. Call SecurityService.disableBiometric() explicitly
     // only if the user actively turns it off in settings.
   }
 
   static Future<void> deleteToken() async {
-    final scopedTokenKey = await _getScopedKey(_kToken);
-    await _storage.delete(key: scopedTokenKey);
+    final userId = await _getUserId();
+    if (userId != null && userId > 0) {
+      await _storage.delete(key: '${_kToken}_$userId');
+    }
+    await _storage.delete(key: _kToken);
   }
 
   /// Alias used by session management logout flow.
   static Future<void> clearToken() async => deleteToken();
 
   static Future<void> clearRefreshToken() async {
-    final scopedRefreshKey = await _getScopedKey(_kRefreshToken);
-    await _storage.delete(key: scopedRefreshKey);
+    final userId = await _getUserId();
+    if (userId != null && userId > 0) {
+      await _storage.delete(key: '${_kRefreshToken}_$userId');
+    }
+    await _storage.delete(key: _kRefreshToken);
   }
 }

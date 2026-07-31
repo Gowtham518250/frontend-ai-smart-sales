@@ -7,6 +7,7 @@ import '../../../native_language_service.dart';
 import '../../../sale_service.dart';
 import '../../../local_storage_service.dart';
 import '../../../inventory_sync_service.dart';
+import '../../../format_helper.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 
 class SalesEntryProvider extends ChangeNotifier {
@@ -129,16 +130,17 @@ class SalesEntryProvider extends ChangeNotifier {
     await _ensureProductsAvailable();
 
     // Build items payload - 🔧 FIXED: Filter out empty/invalid items
-    final itemsPayload = entries.where((e) => e.itemName.isNotEmpty && e.itemName.trim() != 'Unknown' && e.price > 0).map((e) {
+    final itemsPayload = <Map<String, dynamic>>[];
+    for (final e in entries.where((e) => e.itemName.isNotEmpty && e.itemName.trim() != 'Unknown' && e.price > 0)) {
       // 🔧 CRITICAL FIX: Look up actual database product_id for stock deduction
-      final actualProductId = _lookupProductIdByName(e.itemName);
-      
+      final actualProductId = await _lookupProductIdByName(e.itemName);
+
       // 🔧 FALLBACK: Log warning if product lookup fails but still submit sale
-      if (actualProductId == 0) {
-        if (kDebugMode) debugPrint('⚠️ Product lookup failed for: ${e.itemName}, submitting without stock deduction');
+      if (actualProductId == 0 && kDebugMode) {
+        debugPrint('⚠️ Product lookup failed for: ${e.itemName}, submitting without stock deduction');
       }
-      
-      return {
+
+      itemsPayload.add({
         'itemName': e.itemName,
         'product_id': actualProductId, // 0 if not found, backend will handle gracefully
         'quantity': e.quantity,
@@ -146,8 +148,8 @@ class SalesEntryProvider extends ChangeNotifier {
         'gst': e.gst,
         'discount': e.discount,
         'total': e.finalAmount,
-      };
-    }).toList();
+      });
+    }
 
     // 🔧 FIXED: Don't submit sales if no valid items
     if (itemsPayload.isEmpty) {
@@ -197,20 +199,21 @@ class SalesEntryProvider extends ChangeNotifier {
     isSaving = true;
     notifyListeners();
 
-    // 🔧 CRITICAL FIX: Ensure products are available before sale
+    // 🔧 CRITICAL Fix: Ensure products are available before sale
     await _ensureProductsAvailable();
 
     // Build items payload - 🔧 FIXED: Filter out empty/invalid items
-    final itemsPayload = entries.where((e) => e.itemName.isNotEmpty && e.itemName.trim() != 'Unknown' && e.price > 0).map((e) {
+    final itemsPayload = <Map<String, dynamic>>[];
+    for (final e in entries.where((e) => e.itemName.isNotEmpty && e.itemName.trim() != 'Unknown' && e.price > 0)) {
       // 🔧 CRITICAL FIX: Look up actual database product_id for stock deduction
-      final actualProductId = _lookupProductIdByName(e.itemName);
-      
+      final actualProductId = await _lookupProductIdByName(e.itemName);
+
       // 🔧 FALLBACK: Log warning if product lookup fails but still submit sale
-      if (actualProductId == 0) {
-        if (kDebugMode) debugPrint('⚠️ Product lookup failed for: ${e.itemName}, submitting without stock deduction');
+      if (actualProductId == 0 && kDebugMode) {
+        debugPrint('⚠️ Product lookup failed for: ${e.itemName}, submitting without stock deduction');
       }
-      
-      return {
+
+      itemsPayload.add({
         'itemName': e.itemName,
         'product_id': actualProductId, // 0 if not found, backend will handle gracefully
         'quantity': e.quantity,
@@ -218,8 +221,8 @@ class SalesEntryProvider extends ChangeNotifier {
         'gst': e.gst,
         'discount': e.discount,
         'total': e.finalAmount,
-      };
-    }).toList();
+      });
+    }
 
     // 🔧 FIXED: Don't submit sales if no valid items
     if (itemsPayload.isEmpty) {

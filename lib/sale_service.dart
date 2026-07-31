@@ -109,7 +109,7 @@ try {
     final parsedId = int.tryParse(productIdRaw.toString()) ?? 0;
 
     int validId = parsedId > 0 ? parsedId : 0;
-    if (validId == 0 && productIdRaw.toString().length > 3) {
+    if (validId == 0) {
       final String itemName = item['product_name'] ?? item['itemName'] ?? item['name'] ?? '';
       final String barcode = item['barcode'] ?? '';
       final productsList = localProducts is List ? localProducts as List : localProducts.values.toList();

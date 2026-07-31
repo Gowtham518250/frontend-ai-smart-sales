@@ -1038,21 +1038,17 @@ static Future<void> updateCustomerBalance(String customerId, double balance) asy
       };
       
       final jsonString = jsonEncode(backupData);
-      
-      // In a real scenario, compress and encrypt this file here before saving
-      // For now, we write to a local backup file
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('/retail_mind_backup.json');
+      final file = File('${dir.path}/retail_mind_backup_${DateTime.now().millisecondsSinceEpoch}.json');
       await file.writeAsString(jsonString);
       
-      if (kDebugMode) debugPrint('✅ Backup exported to ');
+      if (kDebugMode) debugPrint('✅ Backup exported to ${file.path}');
       return file.path;
     } catch (e) {
-      if (kDebugMode) debugPrint('❌ Backup failed: ');
+      if (kDebugMode) debugPrint('❌ Backup failed: $e');
       return null;
     }
   }
-
   
   static Future<bool> importSecureBackup(String jsonPayload) async {
     try {
@@ -1062,85 +1058,31 @@ static Future<void> updateCustomerBalance(String customerId, double balance) asy
       final products = backupData['products'] as List<dynamic>? ?? [];
       final customers = backupData['customers'] as List<dynamic>? ?? [];
       
-      final uId = await _getUserId() ?? 0;
-      final sid = uId == 0 ? 'default' : uId.toString();
+      final salesBox = await _getBox(_salesBoxBase, encrypted: true);
+      final productsBox = await _getBox(_productsBoxBase, encrypted: true);
+      final customersBox = await _getBox(_customersBoxBase, encrypted: true);
 
-      final sBox = Hive.box('_');
-      final pBox = Hive.box('_');
-      final cBox = Hive.box('_');
+      await salesBox.clear();
+      await productsBox.clear();
+      await customersBox.clear();
 
-      await sBox.clear();
-      await pBox.clear();
-      await cBox.clear();
-
-      await sBox.addAll(sales);
+      await salesBox.put('all_sales', sales);
       
       for (var p in products) {
         if (p is Map && p.containsKey('product_id')) {
-           await pBox.put(p['product_id'], p);
+          await productsBox.put(p['product_id'], p);
         } else if (p is Map && p.containsKey('barcode')) {
-           await pBox.put(p['barcode'], p);
+          await productsBox.put(p['barcode'], p);
         }
       }
       
-      for (var c in customers) {
-        if (c is Map && c.containsKey('phone')) {
-           await cBox.put(c['phone'], c);
-        }
-      }
+      await customersBox.put('customers', customers);
       
       if (kDebugMode) debugPrint('✅ Backup imported successfully');
       return true;
     } catch (e) {
-      if (kDebugMode) debugPrint('❌ Backup import failed: ');
+      if (kDebugMode) debugPrint('❌ Backup import failed: $e');
       return false;
-    }
-  }
-
-  // =========== ATOMIC TRANSACTIONS ===========
-  static Future<bool> executeSaleAtomic(Map<String, dynamic> saleData, List<dynamic> cartItems) async {
-    // 1. Acquire Local Lock
-    // In a real multi-device setup, we would use a distributed lock or Firestore transaction here.
-    // For local operations, we use a simple mutex or synchronous execution.
-    try {
-      final salesBox = await _getBox(_salesBoxBase, encrypted: true);
-      final productsBox = await _getBox(_productsBoxBase, encrypted: true);
-      
-      final currentSales = List<dynamic>.from(salesBox.get('all_sales', defaultValue: []));
-      final currentProducts = List<dynamic>.from(productsBox.get('all_products', defaultValue: []));
-      
-      // 2. Validate and Deduct Inventory in Memory
-      for (var item in cartItems) {
-        final productId = item['id']?.toString() ?? item['product_id']?.toString() ?? '';
-        final double qtyToDeduct = double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0;
-        
-        final pIndex = currentProducts.indexWhere((p) => p['id']?.toString() == productId);
-        if (pIndex != -1) {
-          final p = Map<String, dynamic>.from(currentProducts[pIndex]);
-          final currentStock = double.tryParse(p['stock']?.toString() ?? '0') ?? 0.0;
-          
-          if (currentStock < qtyToDeduct) {
-             throw Exception('Insufficient stock for \. Available: ');
-          }
-          
-          p['stock'] = (currentStock - qtyToDeduct).toString();
-          p['last_updated'] = DateTime.now().millisecondsSinceEpoch;
-          currentProducts[pIndex] = p;
-        }
-      }
-      
-      // 3. Add Sale
-      saleData['last_updated'] = DateTime.now().millisecondsSinceEpoch;
-      currentSales.insert(0, saleData);
-      
-      // 4. Batch Commit (Atomic)
-      await productsBox.put('all_products', currentProducts);
-      await salesBox.put('all_sales', currentSales);
-      
-      return true;
-    } catch (e) {
-      if (kDebugMode) debugPrint('❌ Atomic Sale Failed: ');
-      return false; // Rollback implicit as we didn't write to box
     }
   }
 
