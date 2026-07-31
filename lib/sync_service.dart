@@ -634,6 +634,10 @@ class SyncService {
               success = await _updatePurchaseOrderStatusItem(data);
               break;
 
+            case 'record_khata_payment':
+              success = await _recordKhataPaymentItem(data);
+              break;
+
             default:
               if (kDebugMode) debugPrint('⚠️ Unknown action: $action');
               success = false;
@@ -944,6 +948,32 @@ class SyncService {
       return res.statusCode == 200 || res.statusCode == 201;
     } catch (e) {
       if (kDebugMode) debugPrint('❌ Error updating purchase order status: $e');
+      return false;
+    }
+  }
+
+  /// 🔧 FIX (data loss): khata_page.dart's "Record Payment" flow previously
+  /// had NO offline handling at all — on any network failure it just
+  /// showed an error toast and the payment was gone, with no retry and
+  /// nothing saved locally. For a money-recording feature in an
+  /// offline-first app, that's a direct path to a shop owner believing
+  /// they recorded a customer's payment when the backend never received
+  /// it. This mirrors the same durable-retry pattern already used for
+  /// sales and purchase orders.
+  static Future<bool> _recordKhataPaymentItem(Map<String, dynamic> data) async {
+    try {
+      final token = await SecureTokenStorage.getToken() ?? '';
+      if (token.isEmpty) return false;
+
+      final res = await ApiClient.postJson(
+        '/api/khata/record-payment',
+        data,
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 20));
+
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (e) {
+      if (kDebugMode) debugPrint('❌ Error syncing khata payment: $e');
       return false;
     }
   }

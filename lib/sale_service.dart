@@ -1,4 +1,20 @@
-import 'package/foundation.dart';import 'dart';import 'dart';import 'package/shared_preferences.dart';import 'api_client.dart';import 'stock_alert_service.dart';import 'inventory_management_service.dart';import 'inventory_sync_service.dart';import 'secure_token_storage.dart';import 'financial_math.dart';import 'sync_queue_manager.dart';import 'local_storage_service.dart';import 'retail_growth_kit.dart';import 'sync_service.dart';import 'agent_debug_log.dart';import 'error_log_helper.dart';import 'crash_recovery_service.dart';
+import 'package:flutter/foundation.dart';
+import 'dart:async';
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'api_client.dart';
+import 'stock_alert_service.dart';
+import 'inventory_management_service.dart';
+import 'inventory_sync_service.dart';
+import 'secure_token_storage.dart';
+import 'financial_math.dart';
+import 'sync_queue_manager.dart';
+import 'local_storage_service.dart';
+import 'retail_growth_kit.dart';
+import 'sync_service.dart';
+import 'agent_debug_log.dart';
+import 'error_log_helper.dart';
+import 'crash_recovery_service.dart';
 
 /// PRODUCTION-READY SALE SERVICE: Integrated Idempotency, Encryption, and Error Handling.class SaleService {static final Set<String> _pendingSales = {};
 
@@ -176,7 +192,7 @@ try {
 
     final response = await ApiClient.postJson(ApiClient.invoicesSync, invoicePayload, headers: {
       if (token.isNotEmpty) 'Authorization': 'Bearer $token',
-    }).timeout(const Duration(seconds: 25));
+    }).timeout(const Duration(seconds: 8));
 
     AgentDebugLog.log(
       location: 'sale_service.dart:submitSale:invoice_response',
@@ -405,7 +421,7 @@ static Future<bool> _isSaleSynced(String saleId) async {try {final prefs = await
 
 static Future<void> markSaleAsSynced(String saleId) async {if (saleId.isEmpty) return;await _markSaleAsSynced(saleId);}
 
-static void triggerBackgroundAlert(Map<String, dynamic> item) {try {StockAlertService.checkAndAlertLowStock(productName: item['product_name']?.toString() ?? 'Unknown',quantitySold: (item['qty'] is num? (item['qty'] as num).toDouble(): double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0).round(),productId: int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0,);} catch () {}}
+static void triggerBackgroundAlert(Map<String, dynamic> item) {try {StockAlertService.checkAndAlertLowStock(productName: item['product_name']?.toString() ?? 'Unknown',quantitySold: (item['qty'] is num? (item['qty'] as num).toDouble(): double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0).round(),productId: int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0,);} catch (_) {}}
 
 /// Local-only stock check. Missing stock fields default to 0 (not 9999).static Future<Map<String, dynamic>> _validateStockAvailabilityLocally(List<Map<String, dynamic>> items) async {try {final localProducts = await LocalStorageService.loadLocalProducts();final productsList = localProducts is List ? localProducts as List : localProducts.values.toList();final insufficientItems = <Map<String, dynamic>>[];final bool catalogLoaded = productsList.isNotEmpty;
 

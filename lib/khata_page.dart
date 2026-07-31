@@ -5,10 +5,13 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'local_storage_service.dart';
 import 'whatsapp_message_service.dart';
 import 'api_client.dart';
+import 'sync_queue_manager.dart';
+import 'sync_service.dart';
 import 'visual_widgets.dart';
 
 class KhataPage extends StatefulWidget {
@@ -557,14 +560,19 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
 
                               setModalState(() => isSubmitting = true);
 
+                              final paymentPayload = {
+                                'customer_phone': customer['customer_phone'],
+                                'customer_id': customer['customer_id'],
+                                'amount': amt,
+                                'payment_method': selectedMethod,
+                                'notes': notesController.text.trim(),
+                              };
+
                               try {
-                                final resp = await ApiClient.postJson('/api/khata/record-payment', {
-                                  'customer_phone': customer['customer_phone'],
-                                  'customer_id': customer['customer_id'],
-                                  'amount': amt,
-                                  'payment_method': selectedMethod,
-                                  'notes': notesController.text.trim(),
-                                });
+                                final resp = await ApiClient.postJson(
+                                  '/api/khata/record-payment',
+                                  paymentPayload,
+                                ).timeout(const Duration(seconds: 15));
 
                                 if (resp.statusCode == 200) {
                                   if (ctx.mounted) Navigator.pop(ctx);
@@ -575,7 +583,20 @@ class _KhataPageState extends State<KhataPage> with SingleTickerProviderStateMix
                                   _showToast('Payment record failed: ${errData['detail']}');
                                 }
                               } catch (e) {
-                                _showToast('Error recording payment: $e');
+                                // 🔧 FIX (data loss): this used to just show
+                                // an error toast and discard the payment —
+                                // no offline queue, no retry, nothing saved.
+                                // A shopkeeper recording a customer's cash/
+                                // UPI payment while offline (or during any
+                                // network blip) would believe it was saved
+                                // when it was actually gone. Now it's queued
+                                // for automatic retry the same durable way
+                                // sales and purchase orders already are.
+                                await SyncQueueManager.enqueue('record_khata_payment', paymentPayload);
+                                unawaited(SyncService.processQueueSafe());
+                                if (ctx.mounted) Navigator.pop(ctx);
+                                _showToast('⚠️ No connection — payment of ₹$amt saved and will sync automatically.');
+                                _loadKhata();
                               } finally {
                                 if (ctx.mounted) setModalState(() => isSubmitting = false);
                               }

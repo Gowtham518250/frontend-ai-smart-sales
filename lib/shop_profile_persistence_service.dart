@@ -353,7 +353,21 @@ class ShopProfilePersistenceService {
   static Future<void> applyProfileToPrefs(Map<String, dynamic> profile) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final shopData = (profile['profile'] ?? profile['shop_profile']) as Map<String, dynamic>?;
+      // 🔧 FIX: previously this only handled the WRAPPED shape
+      // ({'profile': {...}, 'settings': {...}} — what a successful
+      // backend sync stores). But saveProfileLocally() is called with the
+      // FLAT shape ({'shop_name': ..., 'phone': ...}) *before* the backend
+      // call even happens, as an offline-safe local save. If that sync
+      // then fails (offline, timeout, backend error — the normal case
+      // this local save exists to protect against), the cache is left
+      // flat, and shopData below ended up null every time — silently
+      // applying nothing, so a just-edited shop name/phone/etc. would
+      // vanish back to its old value on the next load even though it was
+      // genuinely saved to local storage. Now this accepts either shape.
+      final dynamic nestedRaw = profile['profile'] ?? profile['shop_profile'];
+      final Map<String, dynamic>? shopData = nestedRaw is Map
+          ? Map<String, dynamic>.from(nestedRaw)
+          : profile; // already flat — use as-is
 
       if (shopData != null) {
         // Apply individual fields to prefs for backward compatibility
