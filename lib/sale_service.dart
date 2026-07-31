@@ -1,11 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'dart:async';
-import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 import 'stock_alert_service.dart';
 import 'inventory_management_service.dart';
-import 'inventory_sync_service.dart';
 import 'secure_token_storage.dart';
 import 'financial_math.dart';
 import 'sync_queue_manager.dart';
@@ -16,36 +14,50 @@ import 'agent_debug_log.dart';
 import 'error_log_helper.dart';
 import 'crash_recovery_service.dart';
 
-/// PRODUCTION-READY SALE SERVICE: Integrated Idempotency, Encryption, and Error Handling.class SaleService {static final Set<String> _pendingSales = {};
+/// PRODUCTION-READY SALE SERVICE: Integrated Idempotency, Encryption, and Error Handling
+class SaleService {
+  static final Set<String> _pendingSales = {};
 
-static Future<Map<String, dynamic>> submitSale({required String saleId,required List<Map<String, dynamic>> items,required double grandTotal,required double paidAmount,required String customerName,required String customerPhone,required bool withTax,required Map<String, dynamic> totals,String paymentMethod = 'Cash',bool isBorrow = false,}) async {const String context = 'SALE_SUBMIT';
+  static Future<Map<String, dynamic>> submitSale({
+    required String saleId,
+    required List<Map<String, dynamic>> items,
+    required double grandTotal,
+    required double paidAmount,
+    required String customerName,
+    required String customerPhone,
+    required bool withTax,
+    required Map<String, dynamic> totals,
+    String paymentMethod = 'Cash',
+    bool isBorrow = false,
+  }) async {
+    const String context = 'SALE_SUBMIT';
 
-if (_pendingSales.contains(saleId)) {
-  if (kDebugMode) debugPrint('🚨 Sale $saleId is already being processed - skipping duplicate');
-  return {
-    'success': false,
-    'error': 'DUPLICATE_REQUEST',
-    'message': 'This sale is already being processed'
-  };
-}
+    if (_pendingSales.contains(saleId)) {
+      if (kDebugMode) debugPrint('🚨 Sale $saleId is already being processed - skipping duplicate');
+      return {
+        'success': false,
+        'error': 'DUPLICATE_REQUEST',
+        'message': 'This sale is already being processed'
+      };
+    }
 
-InventoryManagementService.suppressInventoryCallback = true;
+    InventoryManagementService.suppressInventoryCallback = true;
 
-final isSynced = await _isSaleSynced(saleId);
-if (isSynced) {
-  if (kDebugMode) debugPrint('⚠️ Sale $saleId already synced to backend - skipping');
-  InventoryManagementService.suppressInventoryCallback = false;
-  return {
-    'success': true,
-    'syncCount': 0,
-    'saleId': saleId,
-    'status': 'ALREADY_SYNCED',
-    'message': 'Sale already synced to backend'
-  };
-}
+    final isSynced = await _isSaleSynced(saleId);
+    if (isSynced) {
+      if (kDebugMode) debugPrint('⚠️ Sale $saleId already synced to backend - skipping');
+      InventoryManagementService.suppressInventoryCallback = false;
+      return {
+        'success': true,
+        'syncCount': 0,
+        'saleId': saleId,
+        'status': 'ALREADY_SYNCED',
+        'message': 'Sale already synced to backend'
+      };
+    }
 
-final stockValidation = await _validateStockAvailabilityLocally(items);
-if (!stockValidation['valid']) {
+    final stockValidation = await _validateStockAvailabilityLocally(items);
+    if (!stockValidation['valid']) {
   InventoryManagementService.suppressInventoryCallback = false;
   return {
     'success': false,
@@ -368,7 +380,7 @@ try {
 } finally {
   _pendingSales.remove(saleId);
   try {
-    await CrashRecoveryService.instance.clearIncompleteTransaction('sale', saleId);
+    await CrashRecoveryService.instance.clearSpecificTransaction('sale', {'sale_id': saleId});
   } catch (e) {
     if (kDebugMode) debugPrint('⚠️ Failed to clear incomplete-transaction safety net: $e');
   }
@@ -378,21 +390,17 @@ try {
 
 }
 
-static Future<void> _deductStockViaBackend(List<Map<String, dynamic>> items, String saleId) async {try {final stockUpdates = <Map<String, dynamic>>[];for (var item in items) {final productId = int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString());if (productId != null && productId > 0) {stockUpdates.add({'product_id': productId,'qty': (item['qty'] is num? (item['qty'] as num).toDouble(): double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0),'reference_id': saleId,});}}
-
-  if (stockUpdates.isNotEmpty) {
-    final result = await InventorySyncService.deductStockBatch(stockUpdates);
-    if (kDebugMode) {
-      debugPrint('🛒 Backend stock deduction: ${result['successful']}/${result['total_items']} successful');
-    }
-  }
-} catch (e) {
-  if (kDebugMode) debugPrint('⚠️ Backend stock deduction failed: $e');
-}
-
-}
-
-static Future<void> _markSaleAsSynced(String saleId) async {try {final prefs = await SharedPreferences.getInstance();final syncedSales = prefs.getStringList('synced_sales') ?? [];if (!syncedSales.contains(saleId)) {syncedSales.add(saleId);if (syncedSales.length > 1000) {syncedSales.removeRange(0, syncedSales.length - 1000);}await prefs.setStringList('synced_sales', syncedSales);}
+  static Future<void> _markSaleAsSynced(String saleId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final syncedSales = prefs.getStringList('synced_sales') ?? [];
+      if (!syncedSales.contains(saleId)) {
+        syncedSales.add(saleId);
+        if (syncedSales.length > 1000) {
+          syncedSales.removeRange(0, syncedSales.length - 1000);
+        }
+        await prefs.setStringList('synced_sales', syncedSales);
+      }
 
   final sales = await LocalStorageService.loadSales();
   bool updated = false;
@@ -411,21 +419,47 @@ static Future<void> _markSaleAsSynced(String saleId) async {try {final prefs = a
   if (updated) {
     await LocalStorageService.saveSales(sales);
   }
-} catch (e) {
-  if (kDebugMode) debugPrint('⚠️ Failed to mark sale as synced: $e');
-}
+  } catch (e) {
+    if (kDebugMode) debugPrint('⚠️ Failed to mark sale as synced: $e');
+  }
+  }
 
-}
+  static Future<bool> _isSaleSynced(String saleId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final syncedSales = prefs.getStringList('synced_sales') ?? [];
+      return syncedSales.contains(saleId);
+    } catch (e) {
+      return false;
+    }
+  }
 
-static Future<bool> _isSaleSynced(String saleId) async {try {final prefs = await SharedPreferences.getInstance();final syncedSales = prefs.getStringList('synced_sales') ?? [];return syncedSales.contains(saleId);} catch (e) {return false;}}
+  static Future<void> markSaleAsSynced(String saleId) async {
+    if (saleId.isEmpty) return;
+    await _markSaleAsSynced(saleId);
+  }
 
-static Future<void> markSaleAsSynced(String saleId) async {if (saleId.isEmpty) return;await _markSaleAsSynced(saleId);}
+  static void triggerBackgroundAlert(Map<String, dynamic> item) {
+    try {
+      StockAlertService.checkAndAlertLowStock(
+        productName: item['product_name']?.toString() ?? 'Unknown',
+        quantitySold: (item['qty'] is num
+            ? (item['qty'] as num).toDouble()
+            : double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0).round(),
+        productId: int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0,
+      );
+    } catch (_) {}
+  }
 
-static void triggerBackgroundAlert(Map<String, dynamic> item) {try {StockAlertService.checkAndAlertLowStock(productName: item['product_name']?.toString() ?? 'Unknown',quantitySold: (item['qty'] is num? (item['qty'] as num).toDouble(): double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0).round(),productId: int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0,);} catch (_) {}}
+  /// Local-only stock check. Missing stock fields default to 0 (not 9999).
+  static Future<Map<String, dynamic>> _validateStockAvailabilityLocally(List<Map<String, dynamic>> items) async {
+    try {
+      final localProducts = await LocalStorageService.loadLocalProducts();
+      final productsList = localProducts is List ? localProducts as List : localProducts.values.toList();
+      final insufficientItems = <Map<String, dynamic>>[];
+      final bool catalogLoaded = productsList.isNotEmpty;
 
-/// Local-only stock check. Missing stock fields default to 0 (not 9999).static Future<Map<String, dynamic>> _validateStockAvailabilityLocally(List<Map<String, dynamic>> items) async {try {final localProducts = await LocalStorageService.loadLocalProducts();final productsList = localProducts is List ? localProducts as List : localProducts.values.toList();final insufficientItems = <Map<String, dynamic>>[];final bool catalogLoaded = productsList.isNotEmpty;
-
-  for (var item in items) {
+      for (var item in items) {
     final productId = int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0;
     final qty = (item['qty'] is num
         ? (item['qty'] as num).toDouble()
@@ -480,16 +514,28 @@ static void triggerBackgroundAlert(Map<String, dynamic> item) {try {StockAlertSe
     'message': 'Insufficient stock for: $productNames',
     'insufficient_items': insufficientItems,
   };
-} catch (e) {
-  if (kDebugMode) debugPrint('⚠️ Local stock validation error (allowing sale): $e');
-  return {'valid': true, 'message': 'Stock validation skipped'};
-}
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Local stock validation error (allowing sale): $e');
+      return {'valid': true, 'message': 'Stock validation skipped'};
+    }
+  }
 
-}
+  static void clearInFlight() => _pendingSales.clear();
 
-static void clearInFlight() => _pendingSales.clear();
-
-static Future<void> _persistToLocalHistory({required SharedPreferences prefs,required String saleId,required String customerName,required String customerPhone,required List<Map<String, dynamic>> items,required double grandTotal,required double paidAmount,required bool withTax,required Map<String, dynamic> totals,String paymentMethod = 'Cash',String syncStatus = 'synced',}) async {List<dynamic> history = await LocalStorageService.loadSales();
+  static Future<void> _persistToLocalHistory({
+    required SharedPreferences prefs,
+    required String saleId,
+    required String customerName,
+    required String customerPhone,
+    required List<Map<String, dynamic>> items,
+    required double grandTotal,
+    required double paidAmount,
+    required bool withTax,
+    required Map<String, dynamic> totals,
+    String paymentMethod = 'Cash',
+    String syncStatus = 'synced',
+  }) async {
+    List<dynamic> history = await LocalStorageService.loadSales();
 
 if (!history.any((s) => s['sale_id'] == saleId)) {
   final String safePhone = customerPhone.isNotEmpty
@@ -559,6 +605,6 @@ if (!history.any((s) => s['sale_id'] == saleId)) {
   }
   await LocalStorageService.saveSales(history);
   if (kDebugMode) debugPrint('📝 Created local sale with sync metadata: $saleId');
+  }
 }
-
-}}
+}
