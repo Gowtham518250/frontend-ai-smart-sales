@@ -14,6 +14,7 @@ import 'retail_growth_kit.dart';
 import 'sync_service.dart';
 import 'agent_debug_log.dart';
 import 'error_log_helper.dart';
+import 'crash_recovery_service.dart';
 
 /// PRODUCTION-READY SALE SERVICE: Integrated Idempotency, Encryption, and Error Handling.
 class SaleService {
@@ -171,6 +172,32 @@ class SaleService {
           'line_total': lineTotal,
         };
       }).toList();
+
+      // 🛡️ DATA-LOSS FIX: durably record this sale as "in flight" before any
+      // network call. If the app is killed during the network round-trip
+      // below (crash, OS backgrounding kill, battery death — up to 25s of
+      // exposure per sale), CrashRecoveryService.initialize() on next launch
+      // finds this entry and recovers the sale via its existing _recoverSale
+      // path. Cleared in the outer `finally` block once this function
+      // reaches any normal exit, since by then the sale has already been
+      // durably persisted through the normal (non-crash) path.
+      try {
+        await CrashRecoveryService.instance.registerIncompleteTransaction('sale', {
+          'sale_id': saleId,
+          'customer_name': customerName.isNotEmpty ? customerName : 'Guest Customer',
+          'customer_phone': customerPhone,
+          'items': lineItems,
+          'total': grandTotal.toString(),
+          'total_amount': grandTotal,
+          'paid_amount': paidAmount.toString(),
+          'gst_applied': withTax,
+          'payment_method': paymentMethod,
+          'sync_status': 'pending',
+          'pending_sync': true,
+        });
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Failed to register incomplete-transaction safety net: $e');
+      }
 
 // Step 1: Sync to backend — primary /auth/sales (production-proven), invoice API fallback
       bool backendSuccess = false;
@@ -475,6 +502,12 @@ class SaleService {
       };
     } finally {
       _pendingSales.remove(saleId);
+
+      try {
+        await CrashRecoveryService.instance.clearIncompleteTransaction('sale', saleId);
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Failed to clear incomplete-transaction safety net: $e');
+      }
 
       InventoryManagementService.suppressInventoryCallback = false;
       InventoryManagementService.onInventoryChanged?.call();
@@ -804,6 +837,3 @@ class SaleService {
   }
 
 }
-
-
-
