@@ -143,7 +143,6 @@ class StockValidationResult {
     return 'StockValidationResult(isValid: $isValid, message: $message)';
   }
 }
-
 /// Item for stock checking
 class StockCheckItem {
   final String itemName;
