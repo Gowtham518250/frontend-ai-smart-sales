@@ -21,6 +21,12 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
   // dropped out of the only list the screen showed — it wasn't lost on the
   // backend, but the owner had no way to see it or its details again in-app.
   List<Map<String, dynamic>> _acceptedOrders = [];
+  // 🛡️ FIX: previously only PENDING and ACCEPTED were ever fetched, so an
+  // order that got dispatched (a real, valid next stage the backend
+  // supports via action=DISPATCH) would disappear from view exactly the
+  // same way the original bug worked, just one stage later. Tracking it
+  // explicitly closes that gap.
+  List<Map<String, dynamic>> _dispatchedOrders = [];
   bool _isLoading = true;
   // Tracks order ids whose ACCEPT/REJECT call is still being retried in the
   // background, so the UI can show a "syncing" indicator instead of silently
@@ -31,7 +37,7 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _loadShopIdAndOrders();
   }
 
@@ -54,6 +60,7 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
     await Future.wait([
       _fetchOrdersByStatus('PENDING'),
       _fetchOrdersByStatus('ACCEPTED'),
+      _fetchOrdersByStatus('DISPATCHED'),
     ]);
     if (mounted) setState(() => _isLoading = false);
   }
@@ -68,8 +75,10 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
         setState(() {
           if (status == 'PENDING') {
             _pendingOrders = orders;
-          } else {
+          } else if (status == 'ACCEPTED') {
             _acceptedOrders = orders;
+          } else {
+            _dispatchedOrders = orders;
           }
         });
       }
@@ -88,9 +97,16 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
     // call in the background instead of making the order vanish while we wait.
     setState(() {
       _pendingOrders.removeWhere((o) => o['order_id']?.toString() == orderId);
+      _acceptedOrders.removeWhere((o) => o['order_id']?.toString() == orderId);
+      _dispatchedOrders.removeWhere((o) => o['order_id']?.toString() == orderId);
       if (action == 'ACCEPT') {
         _acceptedOrders.insert(0, {...order, 'status': 'ACCEPTED'});
+      } else if (action == 'DISPATCH') {
+        _dispatchedOrders.insert(0, {...order, 'status': 'DISPATCHED'});
       }
+      // REJECT and DELIVER both move the order to a final state this screen
+      // doesn't track a list for — it correctly drops out of view, unlike
+      // the original bug where every action caused that same disappearance.
       _pendingSync.add(orderId);
     });
 
@@ -156,9 +172,11 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
           labelColor: AppColors.primary,
           unselectedLabelColor: Colors.black54,
           indicatorColor: AppColors.primary,
+          isScrollable: true,
           tabs: [
             Tab(text: 'Pending (${_pendingOrders.length})'),
             Tab(text: 'Accepted (${_acceptedOrders.length})'),
+            Tab(text: 'Dispatched (${_dispatchedOrders.length})'),
           ],
         ),
       ),
@@ -170,12 +188,17 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
                 _buildOrderList(
                   orders: _pendingOrders,
                   emptyText: 'No incoming orders',
-                  showActions: true,
+                  nextAction: 'ACCEPT',
                 ),
                 _buildOrderList(
                   orders: _acceptedOrders,
                   emptyText: 'No accepted orders yet',
-                  showActions: false,
+                  nextAction: 'DISPATCH',
+                ),
+                _buildOrderList(
+                  orders: _dispatchedOrders,
+                  emptyText: 'No dispatched orders yet',
+                  nextAction: 'DELIVER',
                 ),
               ],
             ),
@@ -185,7 +208,7 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
   Widget _buildOrderList({
     required List<Map<String, dynamic>> orders,
     required String emptyText,
-    required bool showActions,
+    required String? nextAction, // 'ACCEPT' | 'DISPATCH' | 'DELIVER' | null (no next stage from here)
   }) {
     return RefreshIndicator(
       onRefresh: _fetchAllOrders,
@@ -218,27 +241,49 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
                                   color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 16)),
                           if (syncing)
                             const Badge(label: Text('SYNCING'), backgroundColor: Colors.orange)
-                          else if (showActions)
+                          else if (nextAction == 'ACCEPT')
                             const Badge(label: Text('NEW'), backgroundColor: Colors.redAccent)
+                          else if (nextAction == 'DISPATCH')
+                            const Badge(label: Text('ACCEPTED'), backgroundColor: Colors.green)
                           else
-                            const Badge(label: Text('ACCEPTED'), backgroundColor: Colors.green),
+                            const Badge(label: Text('DISPATCHED'), backgroundColor: Colors.blue),
                         ],
                       ),
                       const Divider(color: Colors.black12, height: 24),
-                      Text('Customer: ${order['customer_email']}',
+                      // FIX: backend never sends 'customer_email' -- it sends
+                      // customer_name + customer_phone. This previously
+                      // always rendered "Customer: null".
+                      Text('Customer: ${order['customer_name'] ?? 'Guest'}',
                           style: const TextStyle(color: Colors.black87, fontSize: 16)),
+                      if ((order['customer_phone'] ?? '').toString().isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(order['customer_phone'].toString(),
+                              style: const TextStyle(color: Colors.black54, fontSize: 13)),
+                        ),
+                      if ((order['delivery_address'] ?? '').toString().isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text('Deliver to: ${order['delivery_address']}',
+                              style: const TextStyle(color: Colors.black54, fontSize: 13)),
+                        ),
                       const SizedBox(height: 16),
                       const Text('Items Requested:', style: TextStyle(color: Colors.black54, fontSize: 14)),
                       const SizedBox(height: 8),
                       ...items.map((item) {
+                        // FIX: backend field is 'unit_price', not 'price' -- previously always 0/blank.
+                        final qty = item['quantity'] ?? 1;
+                        final unitPrice = (item['unit_price'] is num) ? (item['unit_price'] as num) : 0;
+                        final qtyNum = (qty is num) ? qty : (num.tryParse(qty.toString()) ?? 1);
+                        final lineTotal = unitPrice * qtyNum;
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 4.0),
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text('${item['quantity']}x ${item['product_name']}',
+                              Text('${qty}x ${item['product_name'] ?? 'Item'}',
                                   style: const TextStyle(color: Colors.black87)),
-                              Text('Rs ${(item['price'] ?? 0) * (item['quantity'] ?? 1)}',
+                              Text('Rs ${lineTotal.toStringAsFixed(2)}',
                                   style: const TextStyle(color: Colors.black87)),
                             ],
                           ),
@@ -254,7 +299,7 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
                                   color: Colors.green, fontSize: 20, fontWeight: FontWeight.bold)),
                         ],
                       ),
-                      if (showActions) ...[
+                      if (nextAction == 'ACCEPT') ...[
                         const SizedBox(height: 24),
                         Row(
                           children: [
@@ -280,6 +325,28 @@ class _OnlineOrdersTabState extends State<OnlineOrdersTab>
                               ),
                             ),
                           ],
+                        ),
+                      ] else if (nextAction == 'DISPATCH') ...[
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: syncing ? null : () => _updateOrderStatus(order, 'DISPATCH'),
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+                            icon: const Icon(Icons.local_shipping_outlined, size: 18),
+                            label: const Text('Mark as Dispatched'),
+                          ),
+                        ),
+                      ] else if (nextAction == 'DELIVER') ...[
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: syncing ? null : () => _updateOrderStatus(order, 'DELIVER'),
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                            icon: const Icon(Icons.check_circle_outline, size: 18),
+                            label: const Text('Mark as Delivered'),
+                          ),
                         ),
                       ] else if (syncing) ...[
                         const SizedBox(height: 12),

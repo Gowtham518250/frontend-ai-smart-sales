@@ -8,7 +8,6 @@ import 'api_client.dart';
 import 'models.dart';
 import 'local_storage_service.dart';
 import 'secure_token_storage.dart';
-import 'financial_math.dart';
 import 'sync_queue_manager.dart';
 import 'sale_service.dart';
 import 'error_log_helper.dart';
@@ -339,7 +338,7 @@ class SyncService {
               
               final double price = double.tryParse((li['unit_price'] ?? li['price'] ?? 0).toString()) ?? 0.0;
               final double qty = double.tryParse((li['quantity'] ?? li['qty'] ?? 1).toString()) ?? 1.0;
-              final double lineTotal = double.tryParse((li['line_total'] ?? li['total'] ?? li['total_with_tax'] ?? CurrencyManager.multiply(price, qty)).toString()) ?? CurrencyManager.multiply(price, qty);
+              final double lineTotal = double.tryParse((li['line_total'] ?? li['total'] ?? li['total_with_tax'] ?? (price * qty)).toString()) ?? price * qty;
               
               validItems.add({
                 'product_name': name,
@@ -441,8 +440,8 @@ class SyncService {
       final price = (priceVal is num ? priceVal.toDouble() : double.tryParse(priceVal.toString()) ?? 0.0);
       final qtyVal = (item['quantity'] ?? item['qty'] ?? 1);
       final qty = (qtyVal is num ? qtyVal.toDouble() : double.tryParse(qtyVal.toString()) ?? 1.0);
-      final lineTotalVal = item['line_total'] ?? item['total'] ?? CurrencyManager.multiply(price, qty);
-      final lineTotal = (lineTotalVal is num ? lineTotalVal.toDouble() : double.tryParse(lineTotalVal.toString()) ?? CurrencyManager.multiply(price, qty));
+      final lineTotalVal = item['line_total'] ?? item['total'] ?? (price * qty);
+      final lineTotal = (lineTotalVal is num ? lineTotalVal.toDouble() : double.tryParse(lineTotalVal.toString()) ?? price * qty);
       final body = <String, String>{
         'product_name': name,
         'product': name,
@@ -561,11 +560,23 @@ class SyncService {
         if (retries > 0 && lastAttemptStr != null) {
           final lastAttempt = DateTime.tryParse(lastAttemptStr);
           if (lastAttempt != null) {
-            // 2^retries minutes backoff, capped at ~10 minutes (was capped at 2 hours,
-            // which is why an unsynced sale on a flaky network could appear "stuck" for
-            // a long time — the pulse timer fix above now also re-triggers this sooner).
-            final backoffMinutes = (1 << (retries > 3 ? 3 : retries));
-            if (DateTime.now().difference(lastAttempt).inMinutes < backoffMinutes) {
+            // 🛡️ FIX: previously this jumped straight to a 2-minute mandatory
+            // wait after just the FIRST failure (1 << 1 minutes), then 4, then
+            // 8... A single transient blip (a 5G handoff, one dropped packet)
+            // would lock a sale out of retrying for 2+ minutes even though the
+            // very next attempt would likely succeed instantly, which is what
+            // produced sales that looked "stuck" for a long time on a
+            // perfectly fine network. Give the first couple of retries a
+            // short, second-scale wait, and only escalate to minutes-scale
+            // backoff once several consecutive failures actually suggest a
+            // real outage rather than one bad packet.
+            final backoffSeconds = switch (retries) {
+              1 => 15,
+              2 => 45,
+              3 => 120,
+              _ => 60 * (1 << (retries - 3 > 3 ? 3 : retries - 3)), // caps at 8 min
+            };
+            if (DateTime.now().difference(lastAttempt).inSeconds < backoffSeconds) {
               continue; // Wait for backoff period
             }
           }
@@ -742,7 +753,7 @@ class SyncService {
           'product': item['product_name'] ?? item['product'] ?? 'Item',
           'price': item['price']?.toString() ?? '0',
           'quantity': item['qty']?.toString() ?? item['quantity']?.toString() ?? '1',
-          'total': CurrencyManager.multiply(price, qty).toString(),
+          'total': (price * qty).toString(),
           'sale_id': saleId,
           'date': data['sale_date'] ?? DateTime.now().toIso8601String().split('T')[0],
           'idempotency_key': data['idempotency_key'] ?? '${saleId}_item_$i',

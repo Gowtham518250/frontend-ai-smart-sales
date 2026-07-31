@@ -1302,7 +1302,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
               '/attendance': (context) => const AttendancePage(),
               '/customers': (context) => const CustomersPage(),
               '/invoices': (context) => const KhataPage(),
-              '/purchase-orders': (context) => const PurchaseOrderPage(),
+              // NOTE: '/purchase-orders' was previously registered TWICE in
+              // this route map -- this second entry (pointing to the
+              // local-only PurchaseOrderPage, no backend sync at all) was
+              // silently winning over the earlier registration above
+              // (PurchaseOrdersPage, properly backend-synced), since Dart
+              // map literals let a later key silently overwrite an earlier
+              // one. Removed here so the synced page is what actually loads.
               '/profit-loss': (context) => const ProfitLossPage(),
               '/chatbot-help': (context) => const ChatbotPage(),
               '/worker-management': (context) => const WorkerManagementPage(),
