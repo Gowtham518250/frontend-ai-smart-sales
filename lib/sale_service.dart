@@ -18,6 +18,18 @@ import 'crash_recovery_service.dart';
 class SaleService {
   static final Set<String> _pendingSales = {};
 
+  /// FIX: the three call sites below used to each inline
+  /// `paidAmount >= grandTotal - 0.5 ? 'PAID' : ...` — a flat 50-paise
+  /// tolerance. That's wide enough that a customer who genuinely still owes
+  /// up to 49 paise would be marked PAID. 0.01 (1 paisa) is enough to absorb
+  /// real floating-point rounding noise without masking a real balance due.
+  static String paymentStatusFor(double paidAmount, double grandTotal) {
+    const tolerance = 0.01;
+    if (paidAmount >= grandTotal - tolerance) return 'PAID';
+    if (paidAmount > 0) return 'PARTIAL';
+    return 'UNPAID';
+  }
+
   static Future<Map<String, dynamic>> submitSale({
     required String saleId,
     required List<Map<String, dynamic>> items,
@@ -184,7 +196,7 @@ try {
       'total_amount': grandTotal,
       'paid_amount': paidAmount,
       'tax': withTax ? (totals['tax'] ?? 0.0) : 0.0,
-      'payment_status': paidAmount >= grandTotal - 0.5 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID'),
+      'payment_status': paymentStatusFor(paidAmount, grandTotal),
       'invoice_date': DateTime.now().toIso8601String().split('T')[0],
       'notes': isBorrow ? 'Payment via $paymentMethod - Borrow Invoice' : 'Payment via $paymentMethod - Regular Sale',
       'line_items': lineItems,
@@ -259,7 +271,7 @@ try {
       'total_amount': grandTotal,
       'paid_amount': paidAmount,
       'tax': withTax ? (totals['tax'] ?? 0.0) : 0.0,
-      'payment_status': paidAmount >= grandTotal - 0.5 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID'),
+      'payment_status': paymentStatusFor(paidAmount, grandTotal),
       'invoice_date': DateTime.now().toIso8601String().split('T')[0],
       'notes': isBorrow ? 'Payment via $paymentMethod - Borrow Invoice' : 'Payment via $paymentMethod - Regular Sale',
       'line_items': lineItems,
@@ -595,7 +607,7 @@ if (!history.any((s) => s['sale_id'] == saleId)) {
     'total': grandTotal.toString(),
     'total_amount': grandTotal,
     'paid_amount': paidAmount.toString(),
-    'payment_status': paidAmount >= grandTotal - 0.5 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID'),
+    'payment_status': paymentStatusFor(paidAmount, grandTotal),
     'gst_applied': withTax,
     'payment_method': paymentMethod,
   });

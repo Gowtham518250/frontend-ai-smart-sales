@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 
 class SecureTokenStorage {
   static const FlutterSecureStorage _storage = FlutterSecureStorage();
@@ -166,11 +166,10 @@ class SecureTokenStorage {
       final key = await _getOrCreateKey();
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));
-      return encrypter.decrypt(enc.Encrypted.fromBase64(parts[1]), iv: iv);
-    } catch (_) { return null; }
-  }
-
-  static Future<String?> getToken() async {
+    } catch (e) {
+      if (kDebugMode) debugPrint('SecureTokenStorage.getCustomerToken: decrypt failed ($e)');
+      return null;
+    }
     final scopedTokenKey = await _getScopedKey(_kToken);
     final combined = await _storage.read(key: scopedTokenKey);
     if (combined == null) return null;
@@ -182,7 +181,10 @@ class SecureTokenStorage {
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));
       return encrypter.decrypt(enc.Encrypted.fromBase64(parts[1]), iv: iv);
-    } catch (_) { return null; }
+    } catch (e) {
+      if (kDebugMode) debugPrint('SecureTokenStorage.getToken: decrypt failed ($e)');
+      return null;
+    }
   }
 
   static Future<void> saveRefreshToken(String token) async {
@@ -207,7 +209,10 @@ class SecureTokenStorage {
       final iv = enc.IV.fromBase64(parts[0]);
       final encrypter = enc.Encrypter(enc.AES(key));
       return encrypter.decrypt(enc.Encrypted.fromBase64(parts[1]), iv: iv);
-    } catch (_) { return null; }
+    } catch (e) {
+      if (kDebugMode) debugPrint('SecureTokenStorage.getRefreshToken: decrypt failed ($e)');
+      return null;
+    }
   }
 
   static Future<bool> isSessionValid() async {
@@ -237,7 +242,10 @@ class SecureTokenStorage {
       final encrypter = enc.Encrypter(enc.AES(key));
       final decrypted = encrypter.decrypt(enc.Encrypted.fromBase64(parts[1]), iv: iv);
       return json.decode(decrypted) as Map<String, dynamic>;
-    } catch (_) { return null; }
+    } catch (e) {
+      if (kDebugMode) debugPrint('SecureTokenStorage.getUser: decrypt failed ($e)');
+      return null;
+    }
   }
 
   static Future<void> clearAll() async {

@@ -919,7 +919,14 @@ class LocalStorageService {
         };
       }
 
-      final isPaid = inv['status']?.toString().toUpperCase() == 'PAID';
+      // FIX: invoices store payment status under 'payment_status' (see
+      // sale_service.dart's create-invoice payload), not 'status' — 'status'
+      // on an invoice/sale record means sync status ('COMMITTED_LOCALLY',
+      // 'QUEUED_OFFLINE', etc.), a completely different field. Reading
+      // inv['status'] here meant it was always null, so isPaid was always
+      // false, so every invoice — including fully paid ones — got added to
+      // the customer's outstanding unified_balance debt.
+      final isPaid = inv['payment_status']?.toString().toUpperCase() == 'PAID';
       if (!isPaid) {
         final amount = double.tryParse(inv['total_amount']?.toString() ?? '0') ?? 0.0;
         unified[phone]!['unified_balance'] = (unified[phone]!['unified_balance'] as double) + amount;

@@ -215,6 +215,13 @@ class UserDataClearService {
         '_otp_',
         '_protected_',
         'all_sales_',
+        // FIX: product_catalog_service.dart's cache used to be a single
+        // global 'product_catalog_v2' key (see that file's fix) — now it's
+        // scoped per user as 'product_catalog_v2_{userId}'. Clearing both
+        // forms: the prefix here catches the new scoped key, and the
+        // explicit remove() right below catches any leftover legacy
+        // unscoped key from before that fix.
+        'product_catalog_v2_',
       ];
       final allKeys = prefs.getKeys().toList();
       for (final key in allKeys) {
@@ -223,6 +230,7 @@ class UserDataClearService {
           if (kDebugMode) debugPrint('  ✓ Cleared dynamic key: $key');
         }
       }
+      await prefs.remove('product_catalog_v2'); // legacy unscoped key
       
       // Now that sales/invoices/customers/products/inventory have been
       // durably restored (using the preserved user_id), it's safe to clear
