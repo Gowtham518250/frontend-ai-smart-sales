@@ -472,63 +472,61 @@ try {
       final bool catalogLoaded = productsList.isNotEmpty;
 
       for (var item in items) {
-    final productId = int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0;
-    final qty = (item['qty'] is num
-        ? (item['qty'] as num).toDouble()
-        : double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0);
-    final itemName = (item['product_name'] ?? item['itemName'] ?? item['name'] ?? '').toString().toLowerCase();
+        final productId = int.tryParse((item['product_id'] ?? item['id'] ?? '0').toString()) ?? 0;
+        final qty = (item['qty'] is num
+            ? (item['qty'] as num).toDouble()
+            : double.tryParse(item['qty']?.toString() ?? '1') ?? 1.0);
+        final itemName = (item['product_name'] ?? item['itemName'] ?? item['name'] ?? '').toString().toLowerCase();
 
-    if (productId > 0 || itemName.isNotEmpty) {
-      Map<String, dynamic>? found;
-      for (var p in productsList) {
-        final pIdRaw = (p['id'] ?? p['product_id'] ?? '').toString();
-        final pId = int.tryParse(pIdRaw) ?? 0;
-        final pName = (p['product_name'] ?? p['name'] ?? '').toString().toLowerCase();
+        if (productId > 0 || itemName.isNotEmpty) {
+          Map<String, dynamic>? found;
+          for (var p in productsList) {
+            final pIdRaw = (p['id'] ?? p['product_id'] ?? '').toString();
+            final pId = int.tryParse(pIdRaw) ?? 0;
+            final pName = (p['product_name'] ?? p['name'] ?? '').toString().toLowerCase();
 
-        if ((productId > 0 && pId == productId) || (itemName.isNotEmpty && pName == itemName)) {
-          found = Map<String, dynamic>.from(p as Map);
-          break;
+            if ((productId > 0 && pId == productId) || (itemName.isNotEmpty && pName == itemName)) {
+              found = Map<String, dynamic>.from(p as Map);
+              break;
+            }
+          }
+
+          if (found != null) {
+            final stockRaw = found['current_stock'] ?? found['stock'] ?? found['quantity'];
+            final currentStock = stockRaw == null
+                ? 0.0
+                : ((stockRaw is num) ? stockRaw.toDouble() : double.tryParse(stockRaw.toString()) ?? 0.0);
+            if (qty > currentStock) {
+              insufficientItems.add({
+                'product_id': productId,
+                'product_name': found['product_name'] ?? found['name'] ?? itemName,
+                'requested_qty': qty,
+                'available_stock': currentStock,
+              });
+            }
+          } else if (catalogLoaded && productId > 0) {
+            insufficientItems.add({
+              'product_id': productId,
+              'product_name': itemName.isNotEmpty ? itemName : 'Product $productId',
+              'requested_qty': qty,
+              'available_stock': 0,
+            });
+          }
         }
       }
 
-      if (found != null) {
-        final stockRaw = found['current_stock'] ?? found['stock'] ?? found['quantity'];
-        final currentStock = stockRaw == null
-            ? 0.0
-            : ((stockRaw is num) ? stockRaw.toDouble() : double.tryParse(stockRaw.toString()) ?? 0.0);
-        if (qty > currentStock) {
-          insufficientItems.add({
-            'product_id': productId,
-            'product_name': found['product_name'] ?? found['name'] ?? itemName,
-            'requested_qty': qty,
-            'available_stock': currentStock,
-          });
-        }
-      } else if (catalogLoaded && productId > 0) {
-        // Known numeric product id missing from cache with stock — block to prevent oversell.
-        insufficientItems.add({
-          'product_id': productId,
-          'product_name': itemName.isNotEmpty ? itemName : 'Product $productId',
-          'requested_qty': qty,
-          'available_stock': 0,
-        });
+      if (insufficientItems.isEmpty) {
+        return {'valid': true, 'message': 'Stock check passed'};
       }
-      // Custom/ad-hoc items (no catalog id) still allowed.
-    }
-  }
-
-  if (insufficientItems.isEmpty) {
-    return {'valid': true, 'message': 'Stock check passed'};
-  }
-  final productNames = insufficientItems.map((i) => i['product_name']).join(', ');
-  return {
-    'valid': false,
-    'message': 'Insufficient stock for: $productNames',
-    'insufficient_items': insufficientItems,
-  };
+      final productNames = insufficientItems.map((i) => i['product_name']).join(', ');
+      return {
+        'valid': false,
+        'message': 'Insufficient stock for: $productNames',
+        'insufficient_items': insufficientItems,
+      };
     } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ Local stock validation error (allowing sale): $e');
-      return {'valid': true, 'message': 'Stock validation skipped'};
+      if (kDebugMode) debugPrint('⚠️ Local stock validation error (blocking sale): $e');
+      return {'valid': false, 'message': 'Stock validation unavailable; please retry'};
     }
   }
 

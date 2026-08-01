@@ -29,9 +29,10 @@ class ScopedSharedPreferences {
         _currentUserId = persistedId.toString();
       }
     }
+
     if (_currentUserId == '0') {
-      if (kDebugMode) debugPrint('⚠️ SECURITY: No user ID set for scoped key: $key');
-      throw Exception('SECURITY: ScopedSharedPreferences accessed without a current user ID.');
+      if (kDebugMode) debugPrint('⚠️ SECURITY: No user ID set for scoped key: $key; using default scope.');
+      return 'user_0_$key';
     }
     return 'user_${_currentUserId}_$key';
   }

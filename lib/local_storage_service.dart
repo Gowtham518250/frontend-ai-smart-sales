@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'inventory_stock_helper.dart';
 import 'sales_dedup_helper.dart';
+import 'stored_sale.dart';
 
 /// SENIOR ENGINEER REFACTOR: Enterprise Local Storage Service
 /// Features: User Isolation, Hive Performance, Auto-recovery, and Zero Data Leakage.
@@ -50,15 +51,6 @@ class LocalStorageService {
     if (kDebugMode) debugPrint('⚠️ Invalid user ID detected: primary=$primary, alternate=$alternate');
     
     return null; // Return null for non-critical operations that check with _hasValidUserId()
-  }
-  
-  /// 🔒 SECURITY: Strict user ID validation that throws errors for critical operations
-  static Future<int> _getUserIdStrict() async {
-    final id = await _getUserId();
-    if (id == null || id == 0) {
-      throw Exception('SECURITY: Invalid or missing user_id. Critical operation cannot proceed without authenticated user.');
-    }
-    return id;
   }
   
   /// ✅ FIX: Call on app startup to check and migrate schema if needed with proper backup and rollback
@@ -552,13 +544,17 @@ class LocalStorageService {
     if (kDebugMode) debugPrint('🧹 Purged legacy prefs all_sales');
   }
 
-  /// 🔒 SECURITY: Clear all boxes belonging to other users to prevent data leakage
+  /// 🔒 SECURITY: Clear all boxes belonging to other users to prevent data leakage.
+  ///
+  /// This version no longer assumes user IDs are in a small fixed range. It
+  /// inspects the actual Hive boxes present on disk and removes only those that
+  /// are clearly scoped to a different user.
   static Future<void> clearOtherUserBoxes() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final currentUserId = prefs.getInt('user_id') ?? prefs.getInt('userId') ?? 0;
       if (currentUserId == 0) return;
-      
+
       final boxBases = [
         _salesBoxBase,
         _productsBoxBase,
@@ -570,31 +566,76 @@ class LocalStorageService {
         _expensesBoxBase,
         _inventoryBoxBase,
       ];
-      
-      // Check all possible user boxes and delete those that don't belong to current user
-      for (final base in boxBases) {
-        // Scan for user-scoped boxes (base_NUMBER format)
+
+      final boxNames = await _listUserScopedBoxNames();
+      for (final boxName in boxNames) {
+        final base = _boxBaseFromScopedName(boxName);
+        if (base == null) continue;
+
+        if (!boxBases.contains(base)) continue;
+
+        final userId = _userIdFromScopedBoxName(boxName);
+        if (userId == null || userId == currentUserId) continue;
+
         try {
-          // This is a simplified approach - in production you might want to track which users have data
-          for (int userId = 1; userId <= 100; userId++) {
-            if (userId == currentUserId) continue; // Skip current user's boxes
-            
-            final boxName = '${base}_$userId';
-            try {
-              if (await Hive.boxExists(boxName)) {
-                await Hive.deleteBoxFromDisk(boxName);
-                if (kDebugMode) debugPrint('🔒 Cleared other user box: $boxName');
-              }
-            } catch (e) {
-              // Ignore errors for non-existent boxes
-            }
+          if (Hive.isBoxOpen(boxName)) {
+            await Hive.box(boxName).close();
+          }
+          if (await Hive.boxExists(boxName)) {
+            await Hive.deleteBoxFromDisk(boxName);
+            if (kDebugMode) debugPrint('🔒 Cleared other user box: $boxName');
           }
         } catch (e) {
-          if (kDebugMode) debugPrint('⚠️ Error scanning boxes for $base: $e');
+          if (kDebugMode) debugPrint('⚠️ Failed to clear other-user box $boxName: $e');
         }
       }
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Error clearing other user boxes: $e');
+    }
+  }
+
+  static Future<List<String>> _listUserScopedBoxNames() async {
+    try {
+      if (kIsWeb) return [];
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final hiveDir = Directory('${appDir.path}/hive');
+      if (!await hiveDir.exists()) return [];
+
+      final boxNames = <String>{};
+      await for (final entity in hiveDir.list()) {
+        if (entity is File) {
+          final fileName = entity.uri.pathSegments.last;
+          if (fileName.endsWith('.hive') || fileName.endsWith('.lock')) {
+            final stem = fileName.replaceAll('.hive', '').replaceAll('.lock', '');
+            if (stem.contains('_')) {
+              boxNames.add(stem);
+            }
+          }
+        }
+      }
+      return boxNames.toList();
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Failed to list user-scoped Hive boxes: $e');
+      return [];
+    }
+  }
+
+  static String? _boxBaseFromScopedName(String boxName) {
+    final parts = boxName.split('_');
+    if (parts.length < 2) return null;
+    final base = parts.take(parts.length - 1).join('_');
+    return base.isEmpty ? null : base;
+  }
+
+  static int? _userIdFromScopedBoxName(String boxName) {
+    try {
+      final parts = boxName.split('_');
+      if (parts.length < 2) return null;
+      final raw = parts.last;
+      return int.tryParse(raw);
+    } catch (_) {
+      return null;
     }
   }
 
@@ -640,7 +681,7 @@ class LocalStorageService {
           await box.put('all_sales', []);
           await box.close();
         }
-        if (kDebugMode) debugPrint('🧹 Cleared orphan sales box: $name');
+        if (kDebugMode) debugPrint('🧹 Cleared orphan sales box: ' + name);
       } catch (e) {
         if (kDebugMode) debugPrint('⚠️ clearOrphanSalesBoxes $name: $e');
       }
@@ -684,23 +725,23 @@ class LocalStorageService {
     }
     final box = await _getBox(_salesBoxBase, encrypted: true);
     final userId = await _getUserId();
-    
-    //  FIX: Merge with existing sales using robust deduplication to prevent ghost duplicates
+
     final List<dynamic> existingSales = box.get('all_sales', defaultValue: []);
-    
-    // BUG-F2 FIX: Prevent exponential memory bloat if salesHistory already contains existingSales
+
     final List<dynamic> combinedRaw;
     if (salesHistory.length >= existingSales.length && existingSales.isNotEmpty && salesHistory.any((s) => s['sale_id'] == existingSales.first['sale_id'])) {
-      combinedRaw = [...salesHistory]; // It's likely a full history payload
+      combinedRaw = [...salesHistory];
     } else {
-      combinedRaw = [...existingSales, ...salesHistory]; // It's an append or merge
+      combinedRaw = [...existingSales, ...salesHistory];
     }
-    
-    // Deduplicate combining both strong IDs and fingerprints
+
     final dedupedSales = SalesDedupHelper.dedupeBills(combinedRaw);
-    
-    await box.put('all_sales', dedupedSales);
-    if (kDebugMode) debugPrint('💾 [LocalStorage] Merged ${salesHistory.length} sales (total: ${dedupedSales.length}) for user: $userId');
+    final List<StoredSale> typedSales = dedupedSales.map<StoredSale>((sale) {
+      return StoredSale.fromJson(Map<String, dynamic>.from(sale));
+    }).toList();
+
+    await box.put('all_sales', typedSales.map((sale) => sale.toJson()).toList());
+    if (kDebugMode) debugPrint('💾 [LocalStorage] Merged ${salesHistory.length} sales (total: ${typedSales.length}) for user: $userId');
   }
 
   static Future<List<dynamic>> loadSales() async {
@@ -711,8 +752,13 @@ class LocalStorageService {
     final box = await _getBox(_salesBoxBase, encrypted: true);
     final userId = await _getUserId();
     final sales = box.get('all_sales', defaultValue: []);
-    if (kDebugMode) debugPrint('🔍 [LocalStorage] Loaded ${sales.length} sales for USER_ID: $userId');
-    return List<dynamic>.from(sales);
+    final typedSales = List<dynamic>.from(sales).map((sale) {
+      if (sale is StoredSale) return sale.toJson();
+      if (sale is Map) return Map<String, dynamic>.from(sale);
+      return sale;
+    }).toList();
+    if (kDebugMode) debugPrint('🔍 [LocalStorage] Loaded ${typedSales.length} sales for USER_ID: $userId');
+    return typedSales;
   }
 
   static Future<bool> cancelSale(String saleId) async {

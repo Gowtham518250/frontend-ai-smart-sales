@@ -358,15 +358,15 @@ class ApiClient {
     try {
       final connectivityResult = await Connectivity().checkConnectivity();
       final isConnected = connectivityResult != ConnectivityResult.none;
-      
+
       if (!isConnected) {
         if (kDebugMode) debugPrint('⚠️ No network connectivity');
       }
-      
+
       return isConnected;
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Network check error: $e');
-      return true; // Assume connected if check fails
+      return false;
     }
   }
   

@@ -37,7 +37,7 @@ class SecureTokenStorage {
   static Future<String?> _getScopedKeyOrBase(String baseKey) async {
     final userId = await _getUserId();
     if (userId == null || userId == 0) {
-      return null;
+      return baseKey;
     }
     return '${baseKey}_$userId';
   }
@@ -46,9 +46,9 @@ class SecureTokenStorage {
     final scopedKey = await _getScopedKeyOrBase(baseKey);
     if (scopedKey == null) {
       if (kDebugMode) {
-        debugPrint('⚠️ SECURITY: No user_id available for scoped secure token storage.');
+        debugPrint('⚠️ SECURITY: No user_id available for scoped secure token storage; using base key.');
       }
-      throw Exception('SECURITY: No user_id available for scoped secure token storage.');
+      return baseKey;
     }
     return scopedKey;
   }
