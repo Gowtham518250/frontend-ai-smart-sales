@@ -25,18 +25,38 @@ class ApiClient {
 
   // Order of addresses to try
   // Build with: flutter build apk --dart-define=API_BASE_URL=https://your-production-url.railway.app
+  static String? _runtimeApiBaseUrl;
+
   static List<String> get _bases {
-    const prodUrl = String.fromEnvironment('API_BASE_URL');
-    if (prodUrl.isEmpty) {
-      // 🚨 CRITICAL: Replaced localhost fallback with production to enforce 100% cloud deployment
-      return ['https://retail-mind-vkbp.onrender.com'];
+    if (_runtimeApiBaseUrl != null && _runtimeApiBaseUrl!.isNotEmpty) {
+      return [_normalizeBaseUrl(_runtimeApiBaseUrl!)];
     }
-    // Ensure the URL has a scheme; prepend https:// if missing
-    var normalized = prodUrl.startsWith('http') ? prodUrl : 'https://$prodUrl';
+
+    const prodUrl = String.fromEnvironment('API_BASE_URL');
+    final selectedUrl = prodUrl.isNotEmpty ? prodUrl : 'https://retail-mind-vkbp.onrender.com';
+    return [_normalizeBaseUrl(selectedUrl)];
+  }
+
+  static String _normalizeBaseUrl(String input) {
+    var normalized = input.trim();
     if (normalized.endsWith('/')) {
       normalized = normalized.substring(0, normalized.length - 1);
     }
-    return [normalized];
+    if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+      normalized = 'https://$normalized';
+    }
+    return normalized;
+  }
+
+  /// Set the API base URL at runtime.
+  ///
+  /// This is useful when running the app without a dart-define or when the
+  /// backend is deployed to a custom host.
+  static void setApiBaseUrl(String? apiBaseUrl) {
+    _runtimeApiBaseUrl = apiBaseUrl?.trim();
+    if (kDebugMode && _runtimeApiBaseUrl != null && _runtimeApiBaseUrl!.isNotEmpty) {
+      debugPrint('🔧 ApiClient runtime API base URL set to: ${_normalizeBaseUrl(_runtimeApiBaseUrl!)}');
+    }
   }
 
   // Get the primary base URL for requests
