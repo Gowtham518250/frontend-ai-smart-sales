@@ -1,9 +1,11 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 import 'inventory_management_service.dart';
 import 'local_storage_service.dart';
 import 'inventory_sync_service.dart';
 import 'secure_preferences_service.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
+import 'package:hive_flutter/hive_flutter.dart';
 
 /// Clear ONLY session-specific data on logout/new login
 /// NEVER delete sales, invoices, customers, products, inventory, or pending sync queue!
@@ -131,60 +133,66 @@ class UserDataClearService {
   static Future<void> clearAllUserData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      
+
       if (kDebugMode) debugPrint('🧹 Clearing ONLY session-specific user data...');
-      
-      // 🔧 PRESERVE ALL BUSINESS DATA BEFORE CLEARING
-      // Preserve ALL sales history
+
       List<dynamic> salesHistory = [];
-      try {
-        salesHistory = await LocalStorageService.loadSales();
-        if (kDebugMode) debugPrint('📦 Preserving ${salesHistory.length} sales records');
-      } catch (e) {
+      List<dynamic> allInvoices = [];
+      List<dynamic> customers = [];
+      Map<String, dynamic> productData = {};
+      List<dynamic> inventory = [];
+
+      final storageReady = await _storageBackendsAvailable();
+      if (!storageReady) {
+        if (kDebugMode) debugPrint('⚠️ Platform storage unavailable; skipping business-data preservation during clear.');
+      } else {
+        // Preserve business data when storage is available; otherwise skip.
+        try {
+          await _ensureHiveInitialized();
+          salesHistory = await LocalStorageService.loadSales();
+          if (kDebugMode) debugPrint('📦 Preserving ${salesHistory.length} sales records');
+        } catch (e) {
           if (kDebugMode) debugPrint('⚠️ Failed to preserve sales history: $e');
         }
-      
-      // Preserve ALL invoices
-      List<dynamic> allInvoices = [];
-      try {
-        allInvoices = await LocalStorageService.loadLocalInvoices();
-        if (kDebugMode) debugPrint('📦 Preserving ${allInvoices.length} invoices');
-      } catch (e) {
+
+        try {
+          await _ensureHiveInitialized();
+          allInvoices = await LocalStorageService.loadLocalInvoices();
+          if (kDebugMode) debugPrint('📦 Preserving ${allInvoices.length} invoices');
+        } catch (e) {
           if (kDebugMode) debugPrint('⚠️ Failed to preserve invoices: $e');
         }
-      
-      // Preserve ALL customers
-      List<dynamic> customers = [];
-      try {
-        customers = await LocalStorageService.loadLocalCustomers();
-        if (kDebugMode) debugPrint('📦 Preserving ${customers.length} customers');
-      } catch (e) {
+
+        try {
+          await _ensureHiveInitialized();
+          customers = await LocalStorageService.loadLocalCustomers();
+          if (kDebugMode) debugPrint('📦 Preserving ${customers.length} customers');
+        } catch (e) {
           if (kDebugMode) debugPrint('⚠️ Failed to preserve customers: $e');
         }
-      
-      // Preserve ALL product data
-      Map<String, dynamic> productData = {};
-      try {
-        final loadedProducts = await LocalStorageService.loadLocalProducts();
-        if (loadedProducts is Map<String, dynamic>) {
-          productData = loadedProducts;
-        } else if (loadedProducts is List) {
-          productData = {'products': loadedProducts};
-        }
-        if (kDebugMode) debugPrint('📦 Preserving product data');
-      } catch (e) {
+
+        try {
+          await _ensureHiveInitialized();
+          final loadedProducts = await LocalStorageService.loadLocalProducts();
+          if (loadedProducts is Map<String, dynamic>) {
+            productData = loadedProducts;
+          } else if (loadedProducts is List) {
+            productData = {'products': loadedProducts};
+          }
+          if (kDebugMode) debugPrint('📦 Preserving product data');
+        } catch (e) {
           if (kDebugMode) debugPrint('⚠️ Failed to preserve product data: $e');
         }
-      
-      // Preserve ALL inventory data
-      List<dynamic> inventory = [];
-      try {
-        inventory = await LocalStorageService.loadInventory();
-        if (kDebugMode) debugPrint('📦 Preserving ${inventory.length} inventory records');
-      } catch (e) {
+
+        try {
+          await _ensureHiveInitialized();
+          inventory = await LocalStorageService.loadInventory();
+          if (kDebugMode) debugPrint('📦 Preserving ${inventory.length} inventory records');
+        } catch (e) {
           if (kDebugMode) debugPrint('⚠️ Failed to preserve inventory: $e');
         }
-      
+      }
+
       // Clear session keys
       // FIX: 'user_id'/'userId' are in this list, and every LocalStorageService
       // save function below (saveSales, saveLocalInvoices, etc.) is guarded by
@@ -223,6 +231,15 @@ class UserDataClearService {
         // explicit remove() right below catches any leftover legacy
         // unscoped key from before that fix.
         'product_catalog_v2_',
+        // FIX: WorkerLocalStorage scopes its own keys as workers_{shopkeeperId}
+        // (see worker_local_storage.dart) rather than going through
+        // ScopedSharedPreferences, so this cleanup pass never touched it.
+        // The per-ID key naming means a different user logging in wouldn't
+        // actually see the previous user's worker records on screen (they'd
+        // query a different key), but the old data was never purged either
+        // -- left sitting on the device indefinitely, which matters if the
+        // device is later inspected, backed up, or handed to someone else.
+        'workers_',
       ];
       final allKeys = prefs.getKeys().toList();
       for (final key in allKeys) {
@@ -239,12 +256,17 @@ class UserDataClearService {
       // initializeSession() call will set the real one right after this.
       if (preservedUserId != null) await prefs.remove('user_id');
       if (preservedUserIdAlt != null) await prefs.remove('userId');
+      await prefs.remove('current_scoped_user_id');
 
       // Reset inventory management service
       InventoryManagementService.reset();
 
       // Clear any sensitive payment credentials stored outside SharedPreferences
-      await SecurePreferencesService.clearAllPaymentData();
+      try {
+        await SecurePreferencesService.clearAllPaymentData();
+      } catch (e) {
+        if (kDebugMode) debugPrint('⚠️ Failed to clear payment credentials: $e');
+      }
 
       // DO NOT clear orphan sales boxes - they're already user-scoped!
       
@@ -294,18 +316,41 @@ class UserDataClearService {
         }
       }
       
-      // Refresh inventory from backend
-      try {
-        await InventorySyncService.refreshAllInventory();
-        await InventorySyncService.updateLastSyncTimestamp();
-        if (kDebugMode) debugPrint('✅ Inventory refreshed from backend');
-      } catch (e) {
-        if (kDebugMode) debugPrint('⚠️ Failed to refresh inventory: $e');
+      // Refresh inventory from backend when storage is available.
+      if (storageReady) {
+        try {
+          await InventorySyncService.refreshAllInventory();
+          await InventorySyncService.updateLastSyncTimestamp();
+          if (kDebugMode) debugPrint('✅ Inventory refreshed from backend');
+        } catch (e) {
+          if (kDebugMode) debugPrint('⚠️ Failed to refresh inventory: $e');
+        }
       }
-      
+
       if (kDebugMode) debugPrint('✅ Session data cleared successfully (business data preserved)');
     } catch (e) {
       if (kDebugMode) debugPrint('❌ Error clearing user data: $e');
+    }
+  }
+
+  static Future<bool> _storageBackendsAvailable() async {
+    try {
+      await SharedPreferences.getInstance();
+      await getApplicationDocumentsDirectory();
+      return true;
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ Storage backends unavailable: $e');
+      return false;
+    }
+  }
+
+  static Future<void> _ensureHiveInitialized() async {
+    try {
+      if (!Hive.isBoxOpen('dummy')) {
+        await Hive.initFlutter();
+      }
+    } catch (_) {
+      // Ignore; this is best-effort and the service will continue with a no-op restore.
     }
   }
 

@@ -355,19 +355,28 @@ class ApiClient {
 
   /// 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
   static Future<bool> _checkNetworkConnectivity() async {
+    // 🛡️ FIX: this used to hard-block every single API call (login,
+    // register, everything) if this check reported "no connectivity" --
+    // whether from a thrown plugin error OR a non-throwing but simply
+    // wrong 'none' result, which connectivity_plus is documented to
+    // return on some devices/VPN configurations even with full internet
+    // access (see fluttercommunity/plus_plugins issue #3810, among
+    // others). A client-side heuristic being wrong is not a good enough
+    // reason to prevent the app from ever attempting the real request.
+    // The actual HTTP call below has its own timeout/connection-error
+    // handling, which is a strictly more trustworthy signal of real
+    // reachability. This check is now purely diagnostic (logs a warning)
+    // and never blocks a request on its own.
     try {
       final connectivityResult = await Connectivity().checkConnectivity();
       final isConnected = connectivityResult != ConnectivityResult.none;
-
-      if (!isConnected) {
-        if (kDebugMode) debugPrint('⚠️ No network connectivity');
+      if (!isConnected && kDebugMode) {
+        debugPrint('⚠️ Connectivity plugin reports no network (not blocking the request on this alone)');
       }
-
-      return isConnected;
     } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ Network check error: $e');
-      return false;
+      if (kDebugMode) debugPrint('⚠️ Network check error (not blocking the request on this alone): $e');
     }
+    return true;
   }
   
   /// 🔒 RESPONSE VALIDATION: Validate API response structure and content

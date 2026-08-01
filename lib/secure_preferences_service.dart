@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'dart:typed_data';
@@ -137,11 +138,15 @@ class SecurePreferencesService {
   
   /// Clear ALL sensitive payment data (call on logout)
   static Future<void> clearAllPaymentData() async {
-    await Future.wait([
-      clearUpiId(),
-      clearMasterPin(),
-      clearPaymentQr(),
-    ]);
+    try {
+      await Future.wait([
+        clearUpiId(),
+        clearMasterPin(),
+        clearPaymentQr(),
+      ]);
+    } catch (e) {
+      if (kDebugMode) debugPrint('⚠️ SecurePreferencesService.clearAllPaymentData failed: $e');
+    }
   }
 
   /// Export all keys (for debugging only - should be disabled in production)
