@@ -35,10 +35,17 @@ class SessionLogoutService {
 
     await OnlineOrdersListener.instance.stop();
     
-    // 🔒 FIRST: Close all current user's Hive boxes to ensure data isolation
+    // 🔒 FIRST: Close all current user's Hive boxes to ensure data isolation.
+    // Box names are already scoped per user (e.g. "sales_v2_$userId"), so
+    // closing the current user's boxes is sufficient — the next user who
+    // logs in resolves their own scoped box names and can never read this
+    // user's data. DO NOT call clearOtherUserBoxes() here: it permanently
+    // deletes other users' local Hive boxes from disk, including sales,
+    // invoices, customers, and inventory that haven't synced to the server
+    // yet. On a shared device (e.g. owner + cashier on one tablet), every
+    // logout or "enter customer mode" was silently wiping the other
+    // account's unsynced business data. Isolation does not require deletion.
     await LocalStorageService.closeUserBoxes();
-    // 🔒 SECURITY: Clear any boxes belonging to other users to prevent data leakage
-    await LocalStorageService.clearOtherUserBoxes();
     // Reset sync queue box reference to ensure new user gets their own queue
     await SyncQueueManager.resetBoxReference();
     

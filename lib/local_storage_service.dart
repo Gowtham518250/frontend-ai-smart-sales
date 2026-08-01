@@ -365,8 +365,11 @@ class LocalStorageService {
         return;
       }
       
-      // Clean up any orphaned boxes from other users
-      await clearOtherUserBoxes();
+      // NOTE: previously called clearOtherUserBoxes() here, which permanently
+      // deletes other users' local Hive data (including anything not yet
+      // synced to the server). Box names are already scoped per user, so no
+      // cleanup of other users' boxes is needed for isolation or migration
+      // correctness. See clearOtherUserBoxes() below for details.
       
       // Add user ID verification to all boxes
       final boxBases = [
@@ -544,54 +547,34 @@ class LocalStorageService {
     if (kDebugMode) debugPrint('🧹 Purged legacy prefs all_sales');
   }
 
-  /// 🔒 SECURITY: Clear all boxes belonging to other users to prevent data leakage.
+  /// ⚠️ DEPRECATED — DO NOT wire this back into logout, login, or migration.
   ///
-  /// This version no longer assumes user IDs are in a small fixed range. It
-  /// inspects the actual Hive boxes present on disk and removes only those that
-  /// are clearly scoped to a different user.
+  /// This deleted every OTHER user's local Hive boxes (sales, invoices,
+  /// customers, inventory, khata) from disk whenever it ran — including
+  /// data that hadn't synced to the server yet. On a shared device (e.g. a
+  /// shop owner and a cashier both logging into one tablet), that meant
+  /// real, unrecoverable data loss for whichever account wasn't currently
+  /// active, every time anyone logged out or entered customer mode. The
+  /// box-detection logic here was improved (scans actual box names on disk
+  /// instead of assuming a small fixed user-ID range), but the underlying
+  /// operation — deleting another user's business data — was never safe.
+  ///
+  /// Data isolation between accounts is already guaranteed without
+  /// deletion: every box name is scoped per user (e.g. "sales_v2_$userId"),
+  /// and closeUserBoxes() closes the current user's boxes on logout. The
+  /// next user who logs in resolves their own scoped names and can never
+  /// read or write another user's box.
+  ///
+  /// If a genuine need arises to wipe another account's local cache (e.g. a
+  /// confirmed account-deletion request from that account's own owner),
+  /// build a narrowly-scoped, explicitly-confirmed flow for that specific
+  /// case — do not restore this as an automatic logout/migration step.
+  @Deprecated('Destructive — no longer called from any flow. Read the doc comment before re-adding a call site.')
   static Future<void> clearOtherUserBoxes() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final currentUserId = prefs.getInt('user_id') ?? prefs.getInt('userId') ?? 0;
-      if (currentUserId == 0) return;
-
-      final boxBases = [
-        _salesBoxBase,
-        _productsBoxBase,
-        _customersBoxBase,
-        _invoicesBoxBase,
-        _purchaseOrdersBoxBase,
-        _khataBoxBase,
-        _idempotencyBoxBase,
-        _expensesBoxBase,
-        _inventoryBoxBase,
-      ];
-
-      final boxNames = await _listUserScopedBoxNames();
-      for (final boxName in boxNames) {
-        final base = _boxBaseFromScopedName(boxName);
-        if (base == null) continue;
-
-        if (!boxBases.contains(base)) continue;
-
-        final userId = _userIdFromScopedBoxName(boxName);
-        if (userId == null || userId == currentUserId) continue;
-
-        try {
-          if (Hive.isBoxOpen(boxName)) {
-            await Hive.box(boxName).close();
-          }
-          if (await Hive.boxExists(boxName)) {
-            await Hive.deleteBoxFromDisk(boxName);
-            if (kDebugMode) debugPrint('🔒 Cleared other user box: $boxName');
-          }
-        } catch (e) {
-          if (kDebugMode) debugPrint('⚠️ Failed to clear other-user box $boxName: $e');
-        }
-      }
-    } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ Error clearing other user boxes: $e');
+    if (kDebugMode) {
+      debugPrint('⚠️ clearOtherUserBoxes() called but is now a no-op — see deprecation notice in local_storage_service.dart.');
     }
+    return;
   }
 
   static Future<List<String>> _listUserScopedBoxNames() async {
