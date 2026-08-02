@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'api_client.dart';
 import 'role_selection_page.dart';
 import 'shop_browser_page.dart';
@@ -15,6 +16,7 @@ class CustomerDashboardPage extends StatefulWidget {
 
 class _CustomerDashboardPageState extends State<CustomerDashboardPage> {
   bool _loading = true;
+  bool _loggingOut = false;
   List<dynamic> _orders = [];
   String _customerName = "Customer";
 
@@ -31,7 +33,9 @@ class _CustomerDashboardPageState extends State<CustomerDashboardPage> {
     if (token.isNotEmpty) {
       try {
         final payload = jsonDecode(utf8.decode(base64.decode(base64.normalize(token.split('.')[1]))));
-        setState(() => _customerName = payload['name'] ?? 'Shopper');
+        if (mounted) {
+          setState(() => _customerName = payload['name'] ?? 'Shopper');
+        }
       } catch (_) {}
     }
   }
@@ -41,19 +45,27 @@ class _CustomerDashboardPageState extends State<CustomerDashboardPage> {
       final historyResponse = await ApiClient.getJson(ApiClient.myOrders);
       if (historyResponse.statusCode == 200) {
         final data = jsonDecode(historyResponse.body);
-        setState(() => _orders = data is List ? data : (data['orders'] ?? []));
+        if (mounted) {
+          setState(() => _orders = data is List ? data : (data['orders'] ?? []));
+        }
       }
     } catch (e) {
       debugPrint('Error: $e');
     } finally {
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
   }
 
   Future<void> _logout() async {
+    if (_loggingOut) return; // Prevent duplicate logout taps
+    setState(() => _loggingOut = true);
+    
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('customer_token');
     await prefs.remove('customer_phone');
+    
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const RoleSelectionPage(email: '')), (route) => false);
   }
@@ -116,7 +128,16 @@ class _CustomerDashboardPageState extends State<CustomerDashboardPage> {
         elevation: 0,
         title: Text('AI Shop Pro', style: GoogleFonts.poppins(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 22)),
         actions: [
-          IconButton(icon: const Icon(Icons.logout, color: Colors.black54), onPressed: _logout),
+          _loggingOut
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : IconButton(icon: const Icon(Icons.logout, color: Colors.black54), onPressed: _logout),
         ],
       ),
       body: _loading

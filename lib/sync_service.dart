@@ -984,9 +984,8 @@ class SyncService {
     try {
       // Try to get server time from backend
       // Format: GET /api/time -> {"timestamp": "2026-04-09T15:30:00Z"}
-      const baseUrl = String.fromEnvironment("API_BASE_URL", defaultValue: "http://localhost:8000");
       final response = await http.get(
-        Uri.parse('$baseUrl/api/time'),
+        Uri.parse('${ApiClient.baseUrl}/api/time'),
         headers: {'Accept': 'application/json'},
       ).timeout(const Duration(seconds: 5));
 

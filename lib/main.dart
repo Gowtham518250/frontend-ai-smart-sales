@@ -128,9 +128,18 @@ import 'error_boundary.dart';
 import 'input_validation_service.dart';
 import 'timeout_config.dart';
 import 'data_validation_service.dart';
+import 'comprehensive_logger.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // 🚨 COMPREHENSIVE LOGGER INITIALIZATION
+  try {
+    await ComprehensiveLogger.initialize();
+    debugPrint('✅ ComprehensiveLogger initialized');
+  } catch (e) {
+    debugPrint('⚠️ ComprehensiveLogger initialization failed: $e');
+  }
   
   // 🚨 FIREBASE & CRASHLYTICS INITIALIZATION
   bool firebaseInitialized = false;
@@ -177,6 +186,17 @@ void main() async {
         
         // Capture all errors in Crashlytics (production only)
         FlutterError.onError = (FlutterErrorDetails details) {
+          // Log to comprehensive logger
+          ComprehensiveLogger.logErrorWithStack(
+            location: 'FlutterError',
+            error: details.exception.toString(),
+            stackTrace: details.stack ?? StackTrace.empty,
+            context: {
+              'library': details.library,
+              'context': details.context?.toString(),
+            },
+          );
+          
           if (firebaseInitialized) {
             FirebaseCrashlytics.instance.recordFlutterError(details);
           }
@@ -187,6 +207,13 @@ void main() async {
         
         // Capture async errors
         PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+          // Log to comprehensive logger
+          ComprehensiveLogger.logErrorWithStack(
+            location: 'AsyncError',
+            error: error.toString(),
+            stackTrace: stack,
+          );
+          
           if (firebaseInitialized) {
             FirebaseCrashlytics.instance.recordError(error, stack);
           }
@@ -662,6 +689,41 @@ class _AppBootSplash extends StatelessWidget {
 
 final GlobalKey<NavigatorState> globalNavigatorKey = GlobalKey<NavigatorState>();
 
+// Route observer for automatic user action tracking
+class LoggingNavigatorObserver extends NavigatorObserver {
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    ComprehensiveLogger.logRouteChange(
+      from: previousRoute?.settings.name ?? 'unknown',
+      to: route.settings.name ?? 'unknown',
+      arguments: route.settings.arguments as Map<String, dynamic>?,
+    );
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    ComprehensiveLogger.logRouteChange(
+      from: route.settings.name ?? 'unknown',
+      to: previousRoute?.settings.name ?? 'unknown',
+      arguments: previousRoute?.settings.arguments as Map<String, dynamic>?,
+    );
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    if (newRoute != null) {
+      ComprehensiveLogger.logRouteChange(
+        from: oldRoute?.settings.name ?? 'unknown',
+        to: newRoute.settings.name ?? 'unknown',
+        arguments: newRoute.settings.arguments as Map<String, dynamic>?,
+      );
+    }
+  }
+}
+
 // New stateful application wrapper checks for stored login token and redirects appropriately.
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
@@ -1123,6 +1185,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   final resolvedRoute = routeSnapshot.data ?? initialRoute;
                   return MaterialApp(
                     navigatorKey: globalNavigatorKey,
+                    navigatorObservers: [LoggingNavigatorObserver()],
                     key: ValueKey<String>(booting ? 'boot' : '${authed}_${resolvedRoute}'),
                     debugShowCheckedModeBanner: false,
                     title: 'RETAIL MIND',

@@ -1,6 +1,5 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -67,20 +66,6 @@ class _DecentRegisterPageState extends State<DecentRegisterPage>
     super.dispose();
   }
 
-  /// Decode response map safely, handling both JSON and non-JSON responses
-  Map<String, dynamic> _decodeResponseMap(http.Response response) {
-    try {
-      final data = json.decode(response.body);
-      if (data is Map<String, dynamic>) {
-        return data;
-      }
-      return {};
-    } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ Failed to decode response: $e');
-      return {};
-    }
-  }
-
   Future<void> registerUser() async {
     final username = usernameController.text.trim();
     final email = emailController.text.trim();
@@ -106,7 +91,7 @@ class _DecentRegisterPageState extends State<DecentRegisterPage>
         if (shopName.isNotEmpty) 'shop_name': shopName,
       });
 
-      final data = _decodeResponseMap(response);
+      final data = json.decode(response.body);
 
       if (response.statusCode == 200) {
         // Backend returns access_token directly on successful registration
@@ -140,12 +125,10 @@ class _DecentRegisterPageState extends State<DecentRegisterPage>
         // 409 "This email is already registered. Please login instead."
         // 409 "Username already registered. Please choose a different name."
         setState(() => errorMessage =
-            data['detail']?.toString() ?? 
-            data['message']?.toString() ??
-            AppLocalizations.of(context).invalidCredentials);
+            data['detail']?.toString() ?? AppLocalizations.of(context).invalidCredentials);
       }
-    } catch (e) {
-      setState(() => errorMessage = 'Connection error: ${e.toString().replaceAll('Exception:', '').trim()}');
+    } catch (_) {
+      setState(() => errorMessage = AppLocalizations.of(context).connectionError);
     }
 
     if (mounted) setState(() => isLoading = false);

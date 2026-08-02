@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'email_secrets.local.dart';
+import 'email_secrets_defaults.dart';
 
 /// Frontend Gmail SMTP — same flow as your previous working build.
 class EmailSenderService {
@@ -44,7 +44,7 @@ class EmailSenderService {
         }
       } else {
         if (kDebugMode) {
-          debugPrint('⚠️ Email credentials missing — check email_secrets.local.dart');
+          debugPrint('⚠️ Email credentials missing — use dart-define (EMAIL_SENDER, EMAIL_APP_PASSWORD) or Email Setup UI');
         }
       }
     } catch (e) {
@@ -195,7 +195,7 @@ class EmailSenderService {
     if (_senderEmail.isEmpty || _appPassword.isEmpty) {
       return {
         'success': false,
-        'message': 'Email credentials not configured. Please check email_secrets.local.dart',
+        'message': 'Email credentials not configured. Use dart-define (EMAIL_SENDER, EMAIL_APP_PASSWORD) or Email Setup UI',
       };
     }
     

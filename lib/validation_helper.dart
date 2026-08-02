@@ -7,11 +7,14 @@ class InputValidator {
     if (value == null || value.isEmpty) return '';
     
     // Remove potentially dangerous characters (& is allowed for product names like "Salt & Pepper")
-    return value
+    final cleaned = value
         .replaceAll(RegExp(r'[<>\";%+]'), '') // & removed - legitimate in Indian product names
         .replaceAll(RegExp(r'\s+'), ' ') // Normalize whitespace
-        .trim()
-        .substring(0, _min(value.length, maxLength));
+        .trim();
+    
+    // FIX: Use cleaned.length instead of value.length to avoid RangeError
+    // when dangerous characters are removed and string becomes shorter
+    return cleaned.substring(0, _min(cleaned.length, maxLength));
   }
 
   /// Validate price - must be positive number

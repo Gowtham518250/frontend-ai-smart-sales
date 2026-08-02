@@ -53,7 +53,7 @@ class OTPService {
       return {
         'success': false,
         'message':
-            'Failed to send OTP. Add Gmail + App Password in lib/email_secrets.local.dart (copy from .example) or open Email Setup.',
+            'Failed to send OTP. Use dart-define (EMAIL_SENDER, EMAIL_APP_PASSWORD) or open Email Setup.',
         if (kDebugMode) 'debugOtp': otp,
       };
     } catch (e) {

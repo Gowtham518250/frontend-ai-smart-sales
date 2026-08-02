@@ -47,6 +47,23 @@ class ShopProfilePersistenceService {
     return '${baseKey}_$userId';
   }
   
+  /// 🔧 FIX: Extract error message from non-JSON backend responses
+  static String _extractErrorMessage(String responseBody) {
+    try {
+      final data = json.decode(responseBody);
+      if (data is Map) {
+        return data['detail']?.toString() ?? 
+               data['message']?.toString() ?? 
+               data['error']?.toString() ?? 
+               'Unknown error';
+      }
+      return responseBody;
+    } catch (_) {
+      // Not JSON, return as-is
+      return responseBody;
+    }
+  }
+  
   /// Save shop profile to local cache
   static Future<void> saveProfileLocally(Map<String, dynamic> profile) async {
     try {
@@ -139,7 +156,7 @@ class ShopProfilePersistenceService {
           headers: {'Authorization': 'Bearer $token'},
         ).timeout(const Duration(seconds: 15));
         
-        if (response.statusCode == 200) {
+          if (response.statusCode == 200) {
           final data = json.decode(response.body);
           
           // Update local cache
@@ -148,7 +165,7 @@ class ShopProfilePersistenceService {
           if (kDebugMode) debugPrint('✅ Shop profile synced to backend (attempt $attempt)');
           return {'success': true, 'profile': data};
         } else {
-          final error = json.decode(response.body)['detail'] ?? 'Unknown error';
+          final error = _extractErrorMessage(response.body);
           if (kDebugMode) debugPrint('⚠️ Backend sync failed (attempt $attempt): $error');
           
           // If shop does not exist, try to create it
@@ -304,10 +321,14 @@ class ShopProfilePersistenceService {
       final scopedCacheKey = await _getScopedKey(_profileCacheKey);
       final scopedLastSyncKey = await _getScopedKey(_lastSyncKey);
       final scopedVersionKey = await _getScopedKey(_profileVersionKey);
+      final scopedPendingSyncKey = await _getScopedKey(_pendingSyncKey);
+      final scopedPendingSyncTimeKey = await _getScopedKey('pending_sync_time');
       
       await prefs.remove(scopedCacheKey);
       await prefs.remove(scopedLastSyncKey);
       await prefs.remove(scopedVersionKey);
+      await prefs.remove(scopedPendingSyncKey);
+      await prefs.remove(scopedPendingSyncTimeKey);
       
       // Also clear individual shop profile fields from prefs
       await prefs.remove('shop_name');
@@ -424,15 +445,18 @@ class ShopProfilePersistenceService {
       final scopedCacheKey = await _getScopedKey(_profileCacheKey);
       final scopedLastSyncKey = await _getScopedKey(_lastSyncKey);
       final scopedVersionKey = await _getScopedKey(_profileVersionKey);
+      final scopedPendingSyncKey = await _getScopedKey(_pendingSyncKey);
       
       final lastSyncStr = prefs.getString(scopedLastSyncKey);
       final hasLocalProfile = prefs.containsKey(scopedCacheKey);
+      final hasPendingSync = prefs.containsKey(scopedPendingSyncKey);
       
       return {
         'has_local_profile': hasLocalProfile,
         'last_sync': lastSyncStr,
         'is_stale': await _isCacheStale(),
         'version': prefs.getInt(scopedVersionKey),
+        'has_pending_sync': hasPendingSync,
       };
     } catch (e) {
       return {
@@ -440,6 +464,7 @@ class ShopProfilePersistenceService {
         'last_sync': null,
         'is_stale': true,
         'version': null,
+        'has_pending_sync': false,
       };
     }
   }
@@ -511,10 +536,13 @@ class ShopProfilePersistenceService {
   static Future<void> markForSync(Map<String, dynamic> profile) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_pendingSyncKey, json.encode(profile));
-      await prefs.setInt('pending_sync_time', DateTime.now().millisecondsSinceEpoch);
+      final scopedPendingSyncKey = await _getScopedKey(_pendingSyncKey);
+      final scopedPendingSyncTimeKey = await _getScopedKey('pending_sync_time');
       
-      if (kDebugMode) debugPrint('📝 Profile marked for pending sync');
+      await prefs.setString(scopedPendingSyncKey, json.encode(profile));
+      await prefs.setInt(scopedPendingSyncTimeKey, DateTime.now().millisecondsSinceEpoch);
+      
+      if (kDebugMode) debugPrint('📝 Profile marked for pending sync (user-isolated)');
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Failed to mark profile for sync: $e');
     }
@@ -526,7 +554,10 @@ class ShopProfilePersistenceService {
       _isSyncing = true;
       
       final prefs = await SharedPreferences.getInstance();
-      final pendingProfileStr = prefs.getString(_pendingSyncKey);
+      final scopedPendingSyncKey = await _getScopedKey(_pendingSyncKey);
+      final scopedPendingSyncTimeKey = await _getScopedKey('pending_sync_time');
+      
+      final pendingProfileStr = prefs.getString(scopedPendingSyncKey);
       
       if (pendingProfileStr == null) {
         return; // No pending sync
@@ -540,9 +571,9 @@ class ShopProfilePersistenceService {
       
       if (result['success'] == true) {
         // Remove from pending
-        await prefs.remove(_pendingSyncKey);
-        await prefs.remove('pending_sync_time');
-        if (kDebugMode) debugPrint('✅ Pending profile synced successfully');
+        await prefs.remove(scopedPendingSyncKey);
+        await prefs.remove(scopedPendingSyncTimeKey);
+        if (kDebugMode) debugPrint('✅ Pending profile synced successfully (user-isolated)');
       }
     } catch (e) {
       if (kDebugMode) debugPrint('⚠️ Pending sync failed: $e');
@@ -557,7 +588,9 @@ class ShopProfilePersistenceService {
       await _syncPendingProfile();
       
       final prefs = await SharedPreferences.getInstance();
-      final pendingProfileStr = prefs.getString(_pendingSyncKey);
+      final scopedPendingSyncKey = await _getScopedKey(_pendingSyncKey);
+      
+      final pendingProfileStr = prefs.getString(scopedPendingSyncKey);
       
       return pendingProfileStr == null; // Returns true if no pending sync
     } catch (e) {

@@ -18,6 +18,9 @@ class AgentDebugLog {
     Map<String, dynamic>? data,
     String runId = 'post-fix',
   }) {
+    // 🔧 FIX: Prevent release builds from sending debug logs to hardcoded localhost debug endpoint
+    if (!kDebugMode) return;
+    
     final payload = {
       'sessionId': _sessionId,
       'runId': runId,
@@ -28,7 +31,7 @@ class AgentDebugLog {
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     };
     final line = jsonEncode(payload);
-    if (kDebugMode) debugPrint('[DBG-6d3a75] $line');
+    debugPrint('[DBG-6d3a75] $line');
     _appendFile(line);
     http
         .post(

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode, debugPrint;
@@ -216,11 +215,14 @@ class _DecentLoginPageState extends State<DecentLoginPage>
         unawaited(_runPostLoginSyncInBackground(userId));
 
       } else {
+        final errorData = json.decode(response.body);
+        final detail = errorData['detail'] ?? 'Login failed';
+        
         setState(() {
-          errorMessage = _extractErrorMessage(response);
+          errorMessage = detail.toString();
         });
         
-        if (kDebugMode) debugPrint('❌ Login error: ${errorMessage} (Status: ${response.statusCode})');
+        if (kDebugMode) debugPrint('❌ Login error: $detail (Status: ${response.statusCode})');
       }
     } catch (e) {
       setState(() {
@@ -230,27 +232,6 @@ class _DecentLoginPageState extends State<DecentLoginPage>
     } finally {
       // 🔧 FIX: Always reset loading state so the UI doesn't get stuck spinning
       if (mounted) setState(() => isLoading = false);
-    }
-  }
-
-  /// Extract error message from response body safely
-  /// Handles both JSON and non-JSON responses
-  String _extractErrorMessage(http.Response response) {
-    try {
-      final data = json.decode(response.body);
-      if (data is Map) {
-        return data['detail']?.toString() ?? 
-               data['message']?.toString() ?? 
-               data['error']?.toString() ?? 
-               'Login failed (Status: ${response.statusCode})';
-      }
-      return 'Login failed (Status: ${response.statusCode})';
-    } catch (e) {
-      // If response is not JSON, return the body text or a generic error
-      if (response.body.isNotEmpty && response.body.length < 200) {
-        return response.body;
-      }
-      return 'Connection error: ${e.toString().replaceAll('Exception:', '').trim()}';
     }
   }
 

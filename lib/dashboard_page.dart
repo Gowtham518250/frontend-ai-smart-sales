@@ -181,7 +181,6 @@ class _DashboardPageState extends State<DashboardPage>
   bool _closedToday = false;
 
   // Concurrency protection flags
-  bool _isLoggingOut = false;
   bool _isSaving = false;
 
   // payment qr image path (saved by user)
@@ -10959,101 +10958,7 @@ class _DashboardPageState extends State<DashboardPage>
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: () async {
-                      // 🔧 Restored safety check (this had been reverted in
-                      // a later commit): check for unsynced items before
-                      // allowing logout, so a failed background sync
-                      // doesn't get silently wiped by clearQueue() below.
-                      final int pendingCount = await SyncQueueManager.getQueueSize();
-                      bool isProcessing = false;
-                      showDialog(
-                        context: context,
-                        barrierDismissible: !isProcessing,
-                        builder: (ctx) => StatefulBuilder(
-                          builder: (ctx, setDialogState) => AlertDialog(
-                            title: const Text('Logout?'),
-                            content: isProcessing
-                                ? const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 12),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        SizedBox(
-                                          width: 20, height: 20,
-                                          child: CircularProgressIndicator(strokeWidth: 2.5),
-                                        ),
-                                        SizedBox(width: 16),
-                                        Text('Logging out...'),
-                                      ],
-                                    ),
-                                  )
-                                : Text(
-                                    pendingCount > 0
-                                        ? 'You have $pendingCount item(s) not yet synced to the cloud (sales, purchase orders, or stock updates). Logging out now risks losing them. Please connect to the internet and wait for them to sync first.'
-                                        : 'Are you sure you want to logout?',
-                                  ),
-                            actions: isProcessing
-                                ? []
-                                : [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(ctx),
-                                      child: const Text('Cancel'),
-                                    ),
-                                    ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: pendingCount > 0 ? Colors.orange : Colors.red,
-                                        foregroundColor: Colors.white,
-                                      ),
-                                      onPressed: () async {
-                                        if (pendingCount > 0) {
-                                          // Block logout instead of silently discarding unsynced data.
-                                          Navigator.pop(ctx);
-                                          return;
-                                        }
-                                        // Prevent concurrent logout operations
-                                        if (_isLoggingOut) {
-                                          if (kDebugMode)
-                                            debugPrint('⚠️ Logout already in progress');
-                                          return;
-                                        }
-                                        _isLoggingOut = true;
-                                        setDialogState(() => isProcessing = true);
-
-                                        try {
-                                          // 🚨 CRITICAL SECURITY: Clear ALL data including shop profile to prevent data leakage
-                                          if (kDebugMode)
-                                            debugPrint(
-                                              '🧹 Clearing ALL user data for security...',
-                                            );
-
-                                          await UserDataClearService.clearAllUserData();
-
-                                          // Clear auth token securely
-                                          await SecureTokenStorage.clearAll();
-                                          // Clear all auth and user data
-                                          await AuthHelper.clearAuthData();
-                                          // 🔧 FIX: no longer force-clearing the sync queue
-                                          // here — we already verified above that it's
-                                          // empty (pendingCount == 0), so there's
-                                          // nothing left to lose.
-
-                                          if (!mounted) return;
-                                          Navigator.pushNamedAndRemoveUntil(
-                                            context,
-                                            '/login',
-                                            (route) => false,
-                                          );
-                                        } finally {
-                                          _isLoggingOut = false;
-                                        }
-                                      },
-                                      child: Text(pendingCount > 0 ? 'OK, I WILL CONNECT' : 'Logout'),
-                                    ),
-                                  ],
-                          ),
-                        ),
-                      );
-                    },
+                    onPressed: () => _performLogout(context),
                     child: const Text('Logout'),
                   ),
                 ],
@@ -12037,123 +11942,7 @@ class _DashboardPageState extends State<DashboardPage>
             Icons.logout,
             AppLocalizations.of(context).logout,
             false,
-            () async {
-              final int pendingCount = await SyncQueueManager.getQueueSize();
-
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  title: Row(
-                    children: [
-                      Icon(
-                        Icons.logout,
-                        semanticLabel: 'Logout',
-                        color: pendingCount > 0 ? Colors.orange : Colors.red,
-                      ),
-                      const SizedBox(width: 10),
-                      const Text('Confirm Logout'),
-                    ],
-                  ),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (pendingCount > 0) ...[
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.red.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.red.withValues(alpha: 0.3),
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(
-                                Icons.error_outline_rounded,
-                                semanticLabel: 'Error Outline Rounded',
-                                color: Colors.red,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'LOGOUT BLOCKED: You have $pendingCount unsynced sales! Please connect to the internet to sync them first.',
-                                  style: GoogleFonts.poppins(
-                                    color: Colors.red[900],
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ] else ...[
-                        Text(
-                          'Are you sure you want to logout? Your synced data will safely return when you log back in.',
-                          style: GoogleFonts.poppins(fontSize: 13),
-                        ),
-                      ],
-                    ],
-                  ),
-                  actions: [
-                    if (pendingCount == 0)
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: Text(
-                          'Cancel',
-                          style: GoogleFonts.poppins(color: Colors.grey),
-                        ),
-                      ),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: pendingCount > 0
-                            ? const Color(0xFF1B3A6B)
-                            : Colors.red,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                      onPressed: () async {
-                        if (pendingCount > 0) {
-                          Navigator.pop(ctx);
-                          return; // Block logout
-                        }
-
-                        Navigator.pop(ctx);
-
-                        // 🚨 CRITICAL SECURITY: Clear ALL data to prevent data leakage
-                        if (kDebugMode)
-                          debugPrint(
-                            '🧹 Clearing ALL user data for security...',
-                          );
-
-                        await UserDataClearService.clearAllUserData();
-
-                        // Safe logout (Business data preserved locally)
-                        await AuthHelper.clearAuthData();
-
-                        if (!mounted) return;
-                        Navigator.pushNamedAndRemoveUntil(
-                          context,
-                          '/login',
-                          (route) => false,
-                        );
-                      },
-                      child: Text(
-                        pendingCount > 0 ? 'OK, I WILL CONNECT' : 'LOGOUT',
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
+            () => _performLogout(context),
             isLogout: true,
           ),
         ],
@@ -12559,6 +12348,109 @@ class _DashboardPageState extends State<DashboardPage>
     );
   }
 
+  // Centralized logout confirmation dialog with loading indicator
+  void _showLogoutLoadingDialog(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 20, height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+            const SizedBox(width: 16),
+            Text(message),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Centralized logout flow that preserves pending sync queue by default
+  Future<void> _performLogout(BuildContext context, {bool preserveSyncQueue = true}) async {
+    final int pendingCount = await SyncQueueManager.getQueueSize();
+    
+    if (pendingCount > 0 && preserveSyncQueue) {
+      if (!mounted) return;
+      _showLogoutLoadingDialog(context, 'Checking unsynced data...');
+      
+      // Brief delay to show the loading state
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      if (!mounted) return;
+      Navigator.pop(context); // Close loading dialog
+      
+      // Show warning about unsynced data
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Logout Blocked'),
+          content: Text(
+            'You have $pendingCount unsynced item(s) (sales, purchase orders, or stock updates). '
+            'Please connect to the internet and wait for them to sync first.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK, I WILL CONNECT'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // Show logout confirmation
+    if (!mounted) return;
+    final bool confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Logout?'),
+        content: const Text('Are you sure you want to logout? Your synced data will safely return when you log back in.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (!confirmed) return;
+
+    // Show loading indicator during logout
+    if (!mounted) return;
+    _showLogoutLoadingDialog(context, 'Logging out...');
+
+    // Perform logout
+    if (kDebugMode) debugPrint('🧹 Clearing ALL user data for security...');
+    await UserDataClearService.clearAllUserData();
+    await AuthHelper.clearAuthData();
+
+    if (!mounted) return;
+    Navigator.pop(context); // Close loading dialog
+    
+    // Navigate to login
+    if (!mounted) return;
+    Navigator.pushNamedAndRemoveUntil(
+      context,
+      '/login',
+      (route) => false,
+    );
+  }
+
   Widget _buildBottomActionButton({
     required String label,
     required IconData icon,
@@ -12845,76 +12737,7 @@ class _DashboardPageState extends State<DashboardPage>
                 const SizedBox(width: 8),
                 // 7. Logout
                 GestureDetector(
-                  onTap: () async {
-                    final int pendingCount = await SyncQueueManager.getQueueSize();
-                    bool isProcessing = false;
-                    showDialog(
-                      context: context,
-                      barrierDismissible: !isProcessing,
-                      builder: (ctx) => StatefulBuilder(
-                        builder: (ctx, setDialogState) => AlertDialog(
-                          title: const Text('Logout?'),
-                          content: isProcessing
-                              ? const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 12),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      SizedBox(
-                                        width: 20, height: 20,
-                                        child: CircularProgressIndicator(strokeWidth: 2.5),
-                                      ),
-                                      SizedBox(width: 16),
-                                      Text('Logging out...'),
-                                    ],
-                                  ),
-                                )
-                              : Text(
-                                  pendingCount > 0
-                                      ? 'You have $pendingCount item(s) not yet synced to the cloud. Logging out now risks losing them. Please connect to the internet and wait for them to sync first.'
-                                      : 'Are you sure you want to logout?',
-                                ),
-                          actions: isProcessing
-                              ? []
-                              : [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(ctx),
-                                    child: const Text('Cancel'),
-                                  ),
-                                  ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: pendingCount > 0 ? Colors.orange : Colors.red,
-                                      foregroundColor: Colors.white,
-                                    ),
-                                    onPressed: () async {
-                                      if (pendingCount > 0) {
-                                        Navigator.pop(ctx);
-                                        return;
-                                      }
-                                      setDialogState(() => isProcessing = true);
-
-                                      // 🚨 CRITICAL SECURITY: Clear ALL data to prevent data leakage
-                                      if (kDebugMode)
-                                        debugPrint(
-                                          '🧹 Clearing ALL user data for security...',
-                                        );
-
-                                      await UserDataClearService.clearAllUserData();
-                                      await AuthHelper.clearAuthData();
-                                      if (!mounted) return;
-                                      Navigator.pushNamedAndRemoveUntil(
-                                        context,
-                                        '/login',
-                                        (route) => false,
-                                      );
-                                    },
-                                    child: Text(pendingCount > 0 ? 'OK, I WILL CONNECT' : 'Logout'),
-                                  ),
-                                ],
-                        ),
-                      ),
-                    );
-                  },
+                  onTap: () => _performLogout(context),
                   child: Tooltip(
                     message: AppLocalizations.of(context).logout,
                     child: Container(

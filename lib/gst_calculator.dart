@@ -43,7 +43,6 @@ class GstCalculator {
     Decimal totalSubtotal = Decimal.zero;
     Decimal totalCGST = Decimal.zero;
     Decimal totalSGST = Decimal.zero;
-    Decimal totalGST = Decimal.zero;
     
     for (final item in items) {
       final quantity = Decimal.fromInt(item.quantity);
@@ -58,14 +57,14 @@ class GstCalculator {
         final lineGST = lineTotal * gstRate;
         final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scaleOnInfinitePrecision: 10);
         
-        totalCGST += halfGST;
-        totalSGST += halfGST;
-        totalGST += lineGST;
+        // FIX: Round each half GST before adding to totals to avoid accumulation errors
+        final roundedHalfGST = Decimal.parse(halfGST.toStringAsFixed(2));
+        totalCGST += roundedHalfGST;
+        totalSGST += roundedHalfGST;
       }
     }
     
-    // FIX: Derive totalGST from the rounded per-item halves to avoid a
-    // display inconsistency where cgst + sgst != totalGST by 1 paise.
+    // FIX: Derive totalGST from the rounded halves to ensure cgst + sgst == totalGST
     final displayTotalGST = totalCGST + totalSGST;
     
     return GstComponents(
@@ -98,10 +97,14 @@ class GstCalculator {
     final lineGST = discountedPrice * gstRateDecimal;
     final halfGST = (lineGST / Decimal.fromInt(2)).toDecimal(scaleOnInfinitePrecision: 10);
     
-    // Use double rounding for simplicity
+    // FIX: Derive totalGST from rounded cgst + sgst to ensure consistency
     final cgst = (halfGST.toDouble() * 100).round() / 100;
     final sgst = (halfGST.toDouble() * 100).round() / 100;
-    final totalGST = (lineGST.toDouble() * 100).round() / 100;
+    final totalGST = cgst + sgst;
+    
+    // FIX: Use rounded display values for grand total
+    final roundedDiscountedPrice = double.parse(discountedPrice.toStringAsFixed(2));
+    final grandTotal = roundedDiscountedPrice + totalGST;
     
     return GstComponents(
       subtotal: lineTotal.toDouble(),
@@ -110,7 +113,7 @@ class GstCalculator {
       cgst: cgst,
       sgst: sgst,
       totalGST: totalGST,
-      grandTotal: (discountedPrice + lineGST).toDouble(),
+      grandTotal: grandTotal,
     );
   }
   

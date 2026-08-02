@@ -10,7 +10,6 @@ import 'dart:io';
 import 'secure_token_storage.dart';
 import 'timeout_config.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'comprehensive_logger.dart';
 
 class ApiClient {
   // FIX-1: Session expiry stream for 401 auto-refresh handling
@@ -70,8 +69,6 @@ class ApiClient {
   static const String healthEndpoint = '/health';
   static const String registerEndpoint = '/auth/register';
   static const String loginEndpoint = '/auth/login';
-  static const String registerEndpointApi = '/api/auth/register';
-  static const String loginEndpointApi = '/api/auth/login';
   static const String customerLogin = '/store/customer/login';
   static const String customerLoginPhone = '/store/customer/login/phone';
   static const String customerRegister = '/store/customer/register';
@@ -315,32 +312,7 @@ class ApiClient {
            path == sessionLogoutAll ||
            path == loginEndpoint ||
            path == registerEndpoint ||
-           path == loginEndpointApi ||
-           path == registerEndpointApi ||
            path == sessionVerify;
-  }
-
-  /// Generate candidate paths for auth endpoints to support both /auth/... and /api/auth/...
-  static List<String> _candidatePaths(String path) {
-    // For login/register, try both the original and /api/auth/... versions
-    if (path == loginEndpoint) {
-      return [loginEndpoint, loginEndpointApi];
-    }
-    if (path == registerEndpoint) {
-      return [registerEndpoint, registerEndpointApi];
-    }
-    return [path];
-  }
-
-  /// Check if we should try the next auth path (for 404/405 responses)
-  static bool _shouldTryNextAuthPath(int statusCode, String path, List<String> candidatePaths, int currentIndex) {
-    // Only try next path for auth endpoints on 404/405
-    if ((statusCode == 404 || statusCode == 405) && 
-        (path == loginEndpoint || path == registerEndpoint) &&
-        currentIndex < candidatePaths.length - 1) {
-      return true;
-    }
-    return false;
   }
 
   static Future<void> dispose() async {
@@ -553,16 +525,6 @@ class ApiClient {
 
   // Try POST with JSON body
   static Future<http.Response> postJson(String path, Map<String, dynamic> body, {Map<String, String>? headers}) async {
-    final startTime = DateTime.now();
-    
-    // Log API request
-    ComprehensiveLogger.logApiRequest(
-      method: 'POST',
-      url: path,
-      headers: headers,
-      body: body,
-    );
-    
     if (kDebugMode) debugPrint('🔵 API: Attempting POST to $path');
     
     // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
@@ -571,11 +533,20 @@ class ApiClient {
     }
     
     // 🔒 INPUT SANITIZATION: Sanitize input before sending
+    // 🔧 CRITICAL FIX: previously used `body as Map<String, dynamic>`, which
+    // throws "type '_Map<dynamic, dynamic>' is not a subtype of type
+    // 'Map<String, dynamic>'" on EVERY call — because the parameter used to
+    // be declared as raw `Map` (unparameterized), so Dart inferred every
+    // map-literal argument passed in as Map<dynamic, dynamic>. This broke
+    // login, attendance check-in, and every other POST request in the app.
+    // Now that the parameter itself is strongly typed, and we use `.from()`
+    // instead of an unsafe cast as extra defense against any future caller
+    // that passes a loosely-typed map.
     final sanitizedBody = _sanitizeInput(Map<String, dynamic>.from(body));
     if (kDebugMode) debugPrint('🔵 Body: ${_redactSensitiveData(sanitizedBody)}');
     
     // Auth Strict Rate limiting
-    if (path.startsWith('/auth/login') || path.startsWith('/auth/register') || path.startsWith('/auth/refresh') || path.startsWith('/api/session') || path.startsWith('/api/auth/')) {
+    if (path.startsWith('/auth/login') || path.startsWith('/auth/register') || path.startsWith('/auth/refresh') || path.startsWith('/api/session')) {
       final allowed = await _rateLimiterLock.synchronized(() => _authRateLimiter.allowRequest(path));
       if (!allowed) {
         throw Exception('Rate limit exceeded. Please try again later.');
@@ -588,153 +559,85 @@ class ApiClient {
       if (kDebugMode) debugPrint('⚠️ Rate limited on $path, waiting...');
       await _rateLimiterLock.synchronized(() => _rateLimiter.waitIfRateLimited(path));
     }
-
-    // Generate candidate paths for auth endpoints
-    final candidatePaths = _candidatePaths(path);
-    Object? lastError;
-    
     // Try last successful base first
     if (_lastSuccessfulBase != null && hasRecentConnection()) {
       try {
-        if (kDebugMode) debugPrint('🟢 Trying last successful base: $_lastSuccessfulBase');
+        if (kDebugMode) debugPrint('🟢 Trying last successful base: $_lastSuccessfulBase$path');
+        final Future<http.Response> Function() req = () => _retryWithBackoff(() => _makePostJsonRequest(_lastSuccessfulBase!, path, sanitizedBody, headers));
+        final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
+          TimeoutConfig.getTimeoutForEndpoint(path),
+        );
         
-        // Try each candidate path
-        for (int i = 0; i < candidatePaths.length; i++) {
-          final currentPath = candidatePaths[i];
-          try {
-            if (kDebugMode) debugPrint('🟢 Trying path: $_lastSuccessfulBase$currentPath');
-            final Future<http.Response> Function() req = () => _retryWithBackoff(() => _makePostJsonRequest(_lastSuccessfulBase!, currentPath, sanitizedBody, headers));
-            final resp = await (_shouldSkipRefresh(currentPath) ? req() : _withTokenRefresh(req)).timeout(
-              TimeoutConfig.getTimeoutForEndpoint(currentPath),
-            );
-            
-            // 🔒 RESPONSE VALIDATION: Validate response before returning
-            if (!_validateResponse(resp)) {
-              if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$currentPath');
-              throw Exception('Invalid response format');
-            }
-            
-            // Check if we should try next auth path
-            if (_shouldTryNextAuthPath(resp.statusCode, currentPath, candidatePaths, i)) {
-              if (kDebugMode) debugPrint('⏳ Auth path $currentPath returned ${resp.statusCode}, trying next candidate');
-              continue;
-            }
-            
-            if (resp.statusCode < 500) {
-              _updateConnectionStatus(_lastSuccessfulBase!);
-              final duration = DateTime.now().difference(startTime);
-              
-              // Log API response
-              ComprehensiveLogger.logApiResponse(
-                method: 'POST',
-                url: '$_lastSuccessfulBase$currentPath',
-                statusCode: resp.statusCode,
-                headers: resp.headers,
-                body: resp.body.isNotEmpty ? jsonDecode(resp.body) : null,
-                duration: duration,
-              );
-              
-              if (kDebugMode) debugPrint('✅ Success on $_lastSuccessfulBase$currentPath - Status: ${resp.statusCode}');
-              return resp;
-            }
-          } catch (e) {
-            lastError = e;
-            if (kDebugMode) debugPrint('⏳ Failed on $_lastSuccessfulBase$currentPath: $e');
-            // Try next candidate path if available
-            if (i < candidatePaths.length - 1) {
-              continue;
-            }
-            break;
-          }
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $_lastSuccessfulBase$path');
+          throw Exception('Invalid response format');
+        }
+        
+        if (resp.statusCode < 500) {
+          _updateConnectionStatus(_lastSuccessfulBase!);
+          if (kDebugMode) debugPrint('✅ Success on $_lastSuccessfulBase - Status: ${resp.statusCode}');
+          return resp;
         }
       } catch (e) {
-        lastError = e;
         if (kDebugMode) debugPrint('⏳ Failed on last successful base: $e');
       }
     }
 
-    // Try all bases with candidate paths
+    // Try all bases
     for (final base in _bases) {
       try {
-        if (kDebugMode) debugPrint('🟢 Trying base: $base');
+        if (kDebugMode) debugPrint('🟢 Trying base: $base$path');
+        final Future<http.Response> Function() req = () => _makePostJsonRequest(base, path, sanitizedBody, headers);
+        final resp = await (_shouldSkipRefresh(path) ? req() : _withTokenRefresh(req)).timeout(
+          TimeoutConfig.getTimeoutForEndpoint(path),
+        );
         
-        // Try each candidate path
-        for (int i = 0; i < candidatePaths.length; i++) {
-          final currentPath = candidatePaths[i];
-          try {
-            if (kDebugMode) debugPrint('🟢 Trying path: $base$currentPath');
-            final Future<http.Response> Function() req = () => _retryWithBackoff(() => _makePostJsonRequest(base, currentPath, sanitizedBody, headers));
-            final resp = await (_shouldSkipRefresh(currentPath) ? req() : _withTokenRefresh(req)).timeout(
-              TimeoutConfig.getTimeoutForEndpoint(currentPath),
-            );
-            
-            // 🔒 RESPONSE VALIDATION: Validate response before returning
-            if (!_validateResponse(resp)) {
-              if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$currentPath');
-              throw Exception('Invalid response format');
-            }
-            
-            // Check if we should try next auth path
-            if (_shouldTryNextAuthPath(resp.statusCode, currentPath, candidatePaths, i)) {
-              if (kDebugMode) debugPrint('⏳ Auth path $currentPath returned ${resp.statusCode}, trying next candidate');
-              continue;
-            }
-            
-            _updateConnectionStatus(base);
-            final duration = DateTime.now().difference(startTime);
-            
-            // Log API response
-            ComprehensiveLogger.logApiResponse(
-              method: 'POST',
-              url: '$base$currentPath',
-              statusCode: resp.statusCode,
-              headers: resp.headers,
-              body: resp.body.isNotEmpty ? jsonDecode(resp.body) : null,
-              duration: duration,
-            );
-            
-            if (kDebugMode) debugPrint('✅ Connected to $base$currentPath - Status: ${resp.statusCode}');
-            return resp;
-          } catch (e) {
-            lastError = e;
-            if (kDebugMode) debugPrint('⏳ Failed on $base$currentPath: $e');
-            ErrorLogHelper.logMessage(
-              'Error on $base$currentPath',
-              level: 'ERROR',
-              attributes: {'endpoint': currentPath, 'error': e.toString()},
-            );
-            // Try next candidate path if available
-            if (i < candidatePaths.length - 1) {
-              continue;
-            }
-            break;
-          }
+        // 🔒 RESPONSE VALIDATION: Validate response before returning
+        if (!_validateResponse(resp)) {
+          if (kDebugMode) debugPrint('⚠️ Response validation failed for $base$path');
+          throw Exception('Invalid response format');
         }
-      } catch (e) {
-        lastError = e;
+        
+        _updateConnectionStatus(base);
+        if (kDebugMode) debugPrint('✅ Connected to $base - Status: ${resp.statusCode}');
+        return resp;
+      } on SocketException catch (e) {
+        if (kDebugMode) debugPrint('⏳ Socket error on $base: $e');
+        ErrorLogHelper.logMessage(
+          'Socket error on $base',
+          level: 'ERROR',
+          attributes: {'endpoint': path, 'error': e.toString()},
+        );
+        continue;
+      } on HttpException catch (e) {
+        if (kDebugMode) debugPrint('❌ HTTP error on $base: $e');
+        ErrorLogHelper.logMessage(
+          'HTTP error on $base',
+          level: 'ERROR',
+          attributes: {'endpoint': path, 'error': e.toString()},
+        );
+        continue;
+      } on TimeoutException catch (e) {
+        if (kDebugMode) debugPrint('❌ Timeout on $base: $e');
+        ErrorLogHelper.logMessage(
+          'Timeout on $base',
+          level: 'WARNING',
+          attributes: {'endpoint': path},
+        );
+        continue;
+      } on Exception catch (e) {
         if (kDebugMode) debugPrint('❌ Exception on $base: $e');
         ErrorLogHelper.logMessage(
           'Exception on $base',
           level: 'ERROR',
           attributes: {'endpoint': path, 'error': e.toString()},
         );
+        continue;
       }
     }
-    
-    // Show real error instead of generic message
-    final errorText = lastError?.toString() ?? 'Unknown error';
-    final duration = DateTime.now().difference(startTime);
-    
-    // Log API error
-    ComprehensiveLogger.logApiError(
-      method: 'POST',
-      url: path,
-      error: errorText,
-      duration: duration,
-    );
-    
-    if (kDebugMode) debugPrint('🔴 All backends unreachable! Last error: $errorText');
-    throw Exception('Connection failed: $errorText. Please check your internet connection and ensure the backend server is running.');
+    if (kDebugMode) debugPrint('🔴 All backends unreachable!');
+    throw Exception('All backends unreachable. Please check your internet connection and ensure the backend server is running.');
   }
 
   static Future<http.Response> _makePostJsonRequest(
@@ -1205,15 +1108,6 @@ class ApiClient {
 
   // Try GET and return response
   static Future<http.Response> getJson(String path, {Map<String, String>? headers}) async {
-    final startTime = DateTime.now();
-    
-    // Log API request
-    ComprehensiveLogger.logApiRequest(
-      method: 'GET',
-      url: path,
-      headers: headers,
-    );
-    
     if (kDebugMode) debugPrint('🔵 API: Attempting GET to $path');
     
     // 🔒 NETWORK CONNECTIVITY VALIDATION: Check network before API calls
@@ -1247,18 +1141,6 @@ class ApiClient {
         
         if (resp.statusCode < 500) {
           _updateConnectionStatus(_lastSuccessfulBase!);
-          final duration = DateTime.now().difference(startTime);
-          
-          // Log API response
-          ComprehensiveLogger.logApiResponse(
-            method: 'GET',
-            url: '$_lastSuccessfulBase$path',
-            statusCode: resp.statusCode,
-            headers: resp.headers,
-            body: resp.body.isNotEmpty ? jsonDecode(resp.body) : null,
-            duration: duration,
-          );
-          
           if (kDebugMode) debugPrint('✅ Success on $_lastSuccessfulBase - Status: ${resp.statusCode}');
           return resp;
         }
@@ -1288,18 +1170,6 @@ class ApiClient {
         }
         
         _updateConnectionStatus(base);
-        final duration = DateTime.now().difference(startTime);
-        
-        // Log API response
-        ComprehensiveLogger.logApiResponse(
-          method: 'GET',
-          url: '$base$path',
-          statusCode: resp.statusCode,
-          headers: resp.headers,
-          body: resp.body.isNotEmpty ? jsonDecode(resp.body) : null,
-          duration: duration,
-        );
-        
         if (kDebugMode) debugPrint('✅ Connected to $base - Status: ${resp.statusCode}');
         return resp;
       } on SocketException catch (e) {

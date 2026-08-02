@@ -3,14 +3,14 @@ import 'dart:async';
 /// Timeout Configuration Class
 /// Centralizes timeout values for different operations
 class TimeoutConfig {
-  // Default timeouts
-  static const Duration defaultTimeout = Duration(seconds: 30);
-  static const Duration syncTimeout = Duration(seconds: 15);
-  static const Duration quickTimeout = Duration(seconds: 5);
-  static const Duration longTimeout = Duration(seconds: 60);
-  static const Duration authTimeout = Duration(seconds: 10);
+  // Default timeouts increased for Render cold starts (takes ~55s)
+  static const Duration defaultTimeout = Duration(seconds: 65);
+  static const Duration syncTimeout = Duration(seconds: 65);
+  static const Duration quickTimeout = Duration(seconds: 15);
+  static const Duration longTimeout = Duration(seconds: 120);
+  static const Duration authTimeout = Duration(seconds: 65);
   static const Duration uploadTimeout = Duration(seconds: 120);
-  static const Duration downloadTimeout = Duration(seconds: 60);
+  static const Duration downloadTimeout = Duration(seconds: 120);
   
   /// Get timeout for specific operation type
   static Duration getTimeoutForOperation(String operation) {

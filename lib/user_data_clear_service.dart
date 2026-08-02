@@ -316,6 +316,14 @@ class UserDataClearService {
         }
       }
       
+      // 🔧 FIX: Remove user_id only after restore completes
+      // This ensures LocalStorageService can access user-scoped Hive boxes during restore
+      // We kept user_id during restore by skipping it in the clear loop above
+      // Now safely remove it after all restores complete
+      await prefs.remove('user_id');
+      await prefs.remove('userId');
+      if (kDebugMode) debugPrint('✅ Removed user_id after restore complete');
+      
       // Refresh inventory from backend when storage is available.
       if (storageReady) {
         try {

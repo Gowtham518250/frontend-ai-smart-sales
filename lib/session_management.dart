@@ -379,9 +379,10 @@ class SessionManagementService {
       if (response.statusCode == 200) {
         await clearTokens();
         await UserDataClearService.clearAllUserData();
-        await SyncQueueManager.clearQueue();
-        await SyncQueueManager.resetBoxReference();
-        if (kDebugMode) debugPrint('✅ Logged out from all devices');
+        // 🔧 FIX: Do NOT clear pending sync queue - preserves offline sales/invoices
+        // await SyncQueueManager.clearQueue();
+        // await SyncQueueManager.resetBoxReference();
+        if (kDebugMode) debugPrint('✅ Logged out from all devices (sync queue preserved)');
         return true;
       }
     } catch (e) {

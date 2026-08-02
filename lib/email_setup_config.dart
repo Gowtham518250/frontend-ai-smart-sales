@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, kReleaseMode, debugPrint;
 import 'email_sender_service.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'email_secrets.local.dart';
+import 'email_secrets_defaults.dart';
 
-// Frontend-only OTP: credentials from email_secrets.local.dart, dart-define, or Email Setup UI.
+// Frontend-only OTP: credentials from dart-define, Email Setup UI, or safe defaults.
 
 /// Seeds Gmail SMTP credentials on app start (same idea as your old working build).
 Future<void> setupEmailCredentialsOnce() async {
@@ -26,7 +26,7 @@ Future<void> setupEmailCredentialsOnce() async {
 
   if (senderEmail.isEmpty || appPassword.isEmpty) {
     if (kDebugMode) {
-      debugPrint('⚠️ Email not seeded: paste Gmail + App Password in lib/email_secrets.local.dart');
+      debugPrint('⚠️ Email not seeded: use dart-define (EMAIL_SENDER, EMAIL_APP_PASSWORD)');
       debugPrint('   Or open /email-setup in the app after launch.');
     }
     return;
