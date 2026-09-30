@@ -23,6 +23,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'phonetic_normalizer.dart';
 import 'voice_nlp_engine.dart';
+import 'voice_accuracy_gate.dart';
 import 'voice_feedback_learning_service.dart';
 import 'language_detection_visualizer.dart';
 import 'language_detector.dart';
@@ -1021,23 +1022,29 @@ class _VoiceBillingAssistantState extends State<VoiceBillingAssistant>
       sttLocaleHint: _selectedLang.code,
     );
 
-    // Map to old ParsedItem structure
-    final items = v2Items.map((i) => ParsedItem(
-      name: i.name,
-      qty: i.qty,
-      unit: i.unit,
-      price: i.price,
-      confidence: i.confidenceScore,
-    )).toList();
+    // Put every NLP result through the production accuracy gate.
+    // High-confidence + deterministic catalog matches can be accepted
+    // automatically; ambiguous/uncertain results remain visible but require
+    // an explicit user confirmation tap before billing.
+    final items = v2Items.map((i) {
+      final gate = VoiceAccuracyGate.evaluate(
+        i,
+        catalog: catalogProducts,
+      );
+
+      return ParsedItem(
+        name: i.name,
+        qty: i.qty,
+        unit: i.unit,
+        price: i.price,
+        confidence: i.confidenceScore,
+        isConfirmed: gate.decision == VoiceGateDecision.autoAccept,
+      );
+    }).toList();
 
     if (commit) {
-      for (final item in items) {
-        _catalog.learnAlias(
-          spoken: clean,
-          canonicalName: item.name,
-          localeCode: _selectedLang.code,
-        );
-      }
+      // Do not automatically teach aliases from unconfirmed NLP output.
+      // Incorrect aliases can permanently poison future matching.
       _committedItems.addAll(items);
       _lastPreviewItems = [];
       _clearEditControllers();
@@ -1087,6 +1094,7 @@ class _VoiceBillingAssistantState extends State<VoiceBillingAssistant>
           unit: ParsedItems[i].unit,
           price: newPrice,
           confidence: ParsedItems[i].confidence,
+          isConfirmed: ParsedItems[i].isConfirmed,
         );
       }
     }
@@ -1100,7 +1108,34 @@ class _VoiceBillingAssistantState extends State<VoiceBillingAssistant>
     final deduped = seen.values.toList()..sort();
     final uniqueItems = deduped.map((i) => ParsedItems[i]).toList();
 
+    // Re-validate the final manually edited values immediately before billing.
+    // This protects the billing callback even if a user edits a previously
+    // valid item into an invalid quantity, price, name, or unit.
+    final invalidIndexes = <int>[];
+    String? firstValidationError;
+    for (int i = 0; i < uniqueItems.length; i++) {
+      final item = uniqueItems[i];
+      final errors = VoiceAccuracyGate.validateManualFields(
+        name: item.name,
+        qty: item.qty,
+        price: item.price,
+        unit: item.unit,
+      );
+      if (errors.isNotEmpty) {
+        item.isConfirmed = false;
+        invalidIndexes.add(i);
+        firstValidationError ??= errors.first.message;
+      }
+    }
+
     final confirmed = uniqueItems.where((e) => e.isConfirmed).toList();
+    if (invalidIndexes.isNotEmpty) {
+      _showSnack(
+        firstValidationError ?? 'Please correct invalid billing values.',
+        isError: true,
+      );
+      if (confirmed.isEmpty) return;
+    }
     if (confirmed.isEmpty) {
       _showSnack('No items selected', isError: true);
       return;
