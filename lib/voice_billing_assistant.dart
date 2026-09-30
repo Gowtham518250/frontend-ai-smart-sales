@@ -1502,10 +1502,12 @@ class _VoiceBillingAssistantState extends State<VoiceBillingAssistant>
     });
 
     final conf = item.confidence;
-    final confHigh = conf >= 0.85;
-    final confMed  = conf >= 0.60 && conf < 0.85;
-    final lowConf  = conf < 0.60;  // 🔧 FIX: Define lowConf variable
-    // < 0.60 = low confidence (red)
+    final confHigh = conf >= VoiceAccuracyGate.autoAcceptThreshold && item.isConfirmed;
+    final confMed = conf >= VoiceAccuracyGate.confirmationThreshold &&
+        conf < VoiceAccuracyGate.autoAcceptThreshold;
+    final lowConf = conf < VoiceAccuracyGate.confirmationThreshold;
+    final reviewRequired = !item.isConfirmed;
+    // The gate, not the color alone, determines whether billing can proceed.
     final borderColor = confHigh
         ? const Color(0xFF00C853).withValues(alpha: 0.7)   // 🟢 Green - exact match
         : confMed
@@ -1569,12 +1571,17 @@ class _VoiceBillingAssistantState extends State<VoiceBillingAssistant>
               Text(' ${item.unit}  ·  ₹',
                 style: GoogleFonts.rajdhani(color: const Color(0xFF546E7A), fontSize: 12)),
               _miniField('Price', _editControllers[idx]!['price']!),
-              if (lowConf) ...[
+              if (reviewRequired) ...[
                 const SizedBox(width: 6),
                 Tooltip(
-                  message: 'Low confidence — please verify',
-                  child: Icon(Icons.warning_amber_rounded,
-                    color: const Color(0xFFFF6D00), size: 14),
+                  message: lowConf
+                      ? 'Low confidence — please verify before billing'
+                      : 'Review required before billing',
+                  child: Icon(
+                    Icons.warning_amber_rounded,
+                    color: const Color(0xFFFF6D00),
+                    size: 14,
+                  ),
                 ),
               ],
             ],
