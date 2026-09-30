@@ -300,7 +300,7 @@ class VoiceAccuracyGate {
         .trim()
         .toLowerCase()
         .replaceAll(RegExp(r'[\u200C\u200D]'), '')
-        .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+        .replaceAll(RegExp(r'[^a-z0-9\u0900-\u0D7F]+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
   }
