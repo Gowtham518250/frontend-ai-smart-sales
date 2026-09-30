@@ -1503,8 +1503,7 @@ class _VoiceBillingAssistantState extends State<VoiceBillingAssistant>
 
     final conf = item.confidence;
     final confHigh = conf >= VoiceAccuracyGate.autoAcceptThreshold && item.isConfirmed;
-    final confMed = conf >= VoiceAccuracyGate.confirmationThreshold &&
-        conf < VoiceAccuracyGate.autoAcceptThreshold;
+    final confMed = conf >= VoiceAccuracyGate.confirmationThreshold && !confHigh;
     final lowConf = conf < VoiceAccuracyGate.confirmationThreshold;
     final reviewRequired = !item.isConfirmed;
     // The gate, not the color alone, determines whether billing can proceed.
